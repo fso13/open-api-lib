@@ -34,6 +34,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          # Имя файла отличается от requirements.txt, поэтому путь задаём явно —
+          # иначе setup-python падает с "No file ... matched to [**/requirements.txt]".
+          cache-dependency-path: requirements-docs.txt
 
       - name: Install docs dependencies
         run: pip install -r requirements-docs.txt
