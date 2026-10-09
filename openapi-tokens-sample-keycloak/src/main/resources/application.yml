@@ -1,0 +1,61 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: openapi-tokens-sample-keycloak
+  datasource:
+    # отдельная БД, чтобы токены не смешивались с form-login семплом (docker compose --profile keycloak)
+    url: jdbc:postgresql://localhost:5433/openapi_tokens_keycloak
+    username: openapi
+    password: openapi
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      client:
+        provider:
+          keycloak:
+            issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/openapi-tokens}
+        registration:
+          keycloak:
+            provider: keycloak
+            client-id: openapi-tokens-ui
+            client-secret: ui-secret
+            authorization-grant-type: authorization_code
+            scope:
+              - openid
+              - profile
+              - email
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/openapi-tokens}
+
+openapi:
+  tokens:
+    enabled: true
+    auth:
+      mode: keycloak
+      keycloak:
+        # владелец токена = claim sub, tenant = claim ниже
+        tenant-claim: tenant_id
+    scopes:
+      mode: identity
+      catalog:
+        "[payments:read]": "Чтение платежей — открывает GET /api/demo/payments (API-токен)"
+        "[payments:write]": "Изменение платежей"
+        "[reports:read]": "Чтение отчётов"
+        "[admin:all]": "Полный доступ — выдаётся только администраторам"
+    hashing:
+      algorithm: argon2
+    limits:
+      max-tokens-per-owner: 10
+
+logging:
+  level:
+    ru.openapi.tokens: INFO
+    org.springframework.security: INFO

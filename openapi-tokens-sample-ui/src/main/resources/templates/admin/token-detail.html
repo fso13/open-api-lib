@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Админка · токен')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: navbar('admin')}"></header>
+
+<main class="page">
+    <div th:replace="~{fragments/layout :: flash}"></div>
+
+    <div class="page-head">
+        <div>
+            <h1 th:text="${token.name}">ci-bot</h1>
+            <p class="muted">
+                Владелец <strong th:text="${token.ownerId}">demo</strong>
+                · префикс <code th:text="${token.prefix}">abcd1234</code>
+            </p>
+        </div>
+        <div class="page-actions">
+            <a class="btn btn-ghost" th:href="@{/admin/tokens}">К списку</a>
+
+            <form th:if="${token.status == 'ACTIVE'}"
+                  th:action="@{/admin/tokens/{id}/block(id=${token.id})}" method="post"
+                  onsubmit="return confirm('Заблокировать токен? Аутентификация по нему перестанет работать.');">
+                <button class="btn btn-warn" type="submit">Заблокировать</button>
+            </form>
+
+            <form th:if="${token.status == 'BLOCKED'}"
+                  th:action="@{/admin/tokens/{id}/unblock(id=${token.id})}" method="post">
+                <button class="btn btn-primary" type="submit">Разблокировать</button>
+            </form>
+
+            <form th:if="${token.status != 'REVOKED'}"
+                  th:action="@{/admin/tokens/{id}/revoke(id=${token.id})}" method="post"
+                  onsubmit="return confirm('Принудительно отозвать токен? Действие необратимо.');">
+                <button class="btn btn-danger" type="submit">Отозвать принудительно</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Параметры</h2>
+        <dl th:replace="~{fragments/layout :: tokenMeta(${token}, true)}"></dl>
+    </div>
+
+    <h2>Использование</h2>
+    <div th:replace="~{fragments/layout :: usageCards(${usage})}"></div>
+
+    <h2>Журнал аудита <span class="muted small">последние 100 записей</span></h2>
+    <div th:replace="~{fragments/layout :: auditTable(${audit})}"></div>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

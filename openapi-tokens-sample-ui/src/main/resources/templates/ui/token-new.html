@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Новый токен')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: navbar('user')}"></header>
+
+<main class="page page-narrow">
+    <div th:replace="~{fragments/layout :: flash}"></div>
+
+    <div class="page-head">
+        <div>
+            <h1>Создать API-токен</h1>
+            <p class="muted">
+                Секретная часть токена (<code>atk_&lt;префикс&gt;_&lt;секрет&gt;</code>) будет показана один раз.
+            </p>
+        </div>
+        <a class="btn btn-ghost" th:href="@{/ui/tokens}">К списку</a>
+    </div>
+
+    <form class="card form" method="post" th:action="@{/ui/tokens}" th:object="${form}">
+
+        <div class="field">
+            <label for="name">Название <span class="req">*</span></label>
+            <input id="name" type="text" th:field="*{name}"
+                   th:classappend="${#fields.hasErrors('name')} ? 'invalid' : ''"
+                   placeholder="ci-bot" autofocus/>
+            <p class="field-error" th:if="${#fields.hasErrors('name')}" th:errors="*{name}">ошибка</p>
+        </div>
+
+        <div class="field">
+            <label for="description">Описание</label>
+            <textarea id="description" rows="2" th:field="*{description}"
+                      th:classappend="${#fields.hasErrors('description')} ? 'invalid' : ''"
+                      placeholder="Токен для CI-пайплайна"></textarea>
+            <p class="field-error" th:if="${#fields.hasErrors('description')}" th:errors="*{description}">ошибка</p>
+        </div>
+
+        <div class="field">
+            <label for="scopes">Scopes <span class="req">*</span></label>
+            <textarea id="scopes" rows="2" th:field="*{scopes}"
+                      th:classappend="${#fields.hasErrors('scopes')} ? 'invalid' : ''"
+                      placeholder="payments:read, payments:write"></textarea>
+            <p class="hint">
+                Через запятую или пробел. Полный список — в
+                <a th:href="@{/ui/scopes}">справочнике скоупов</a>.
+            </p>
+            <div class="chips" th:if="${!#lists.isEmpty(scopes)}">
+                <button type="button" class="chip" th:each="scope : ${scopes}"
+                        th:attr="data-scope=${scope.scope},title=${scope.description}"
+                        th:text="${scope.scope}">payments:read</button>
+            </div>
+            <ul class="scope-ref" th:if="${!#lists.isEmpty(scopes)}">
+                <li th:each="scope : ${scopes}">
+                    <code th:text="${scope.scope}">payments:read</code>
+                    <span class="muted small" th:text="${scope.description} ?: 'описание не задано'">
+                        Чтение платежей
+                    </span>
+                </li>
+            </ul>
+            <p class="hint" th:if="${#lists.isEmpty(scopes)}">
+                Справочник скоупов пуст — впишите значения вручную или опишите их в
+                <code>openapi.tokens.scopes.catalog</code>.
+            </p>
+            <p class="field-error" th:if="${#fields.hasErrors('scopes')}" th:errors="*{scopes}">ошибка</p>
+        </div>
+
+        <div class="grid-2">
+            <div class="field">
+                <label for="expiresAt">Абсолютный срок действия</label>
+                <input id="expiresAt" type="datetime-local" th:field="*{expiresAt}"
+                       th:classappend="${#fields.hasErrors('expiresAt')} ? 'invalid' : ''"/>
+                <p class="hint">Пусто — без абсолютного срока (учитывается только sliding TTL и статус).</p>
+                <p class="field-error" th:if="${#fields.hasErrors('expiresAt')}" th:errors="*{expiresAt}">ошибка</p>
+            </div>
+
+            <div class="field">
+                <label for="slidingTtlSeconds">Sliding TTL, сек</label>
+                <input id="slidingTtlSeconds" type="number" min="30" step="1" th:field="*{slidingTtlSeconds}"
+                       th:classappend="${#fields.hasErrors('slidingTtlSeconds')} ? 'invalid' : ''"
+                       placeholder="3600"/>
+                <p class="hint">Продлевается при каждом успешном использовании. Пусто — выключено.</p>
+                <p class="field-error" th:if="${#fields.hasErrors('slidingTtlSeconds')}"
+                   th:errors="*{slidingTtlSeconds}">ошибка</p>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="field">
+                <label for="rateLimitRequests">Лимит запросов</label>
+                <input id="rateLimitRequests" type="number" min="1" step="1" th:field="*{rateLimitRequests}"
+                       th:classappend="${#fields.hasErrors('rateLimitRequests')} ? 'invalid' : ''"
+                       placeholder="100"/>
+                <p class="field-error" th:if="${#fields.hasErrors('rateLimitRequests')}"
+                   th:errors="*{rateLimitRequests}">ошибка</p>
+            </div>
+            <div class="field">
+                <label for="rateLimitWindowSeconds">Окно лимита, сек</label>
+                <input id="rateLimitWindowSeconds" type="number" min="1" step="1" th:field="*{rateLimitWindowSeconds}"
+                       th:classappend="${#fields.hasErrors('rateLimitWindowSeconds')} ? 'invalid' : ''"
+                       placeholder="60"/>
+                <p class="hint">Заполните оба поля лимита или оставьте оба пустыми (без лимита).</p>
+                <p class="field-error" th:if="${#fields.hasErrors('rateLimitWindowSeconds')}"
+                   th:errors="*{rateLimitWindowSeconds}">ошибка</p>
+            </div>
+        </div>
+
+        <div class="field">
+            <label for="tenantId">tenantId</label>
+            <input id="tenantId" type="text" th:field="*{tenantId}"
+                   th:classappend="${#fields.hasErrors('tenantId')} ? 'invalid' : ''"
+                   placeholder="по умолчанию — tenant владельца"/>
+            <p class="field-error" th:if="${#fields.hasErrors('tenantId')}" th:errors="*{tenantId}">ошибка</p>
+        </div>
+
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Создать токен</button>
+            <a class="btn btn-ghost" th:href="@{/ui/tokens}">Отмена</a>
+        </div>
+    </form>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+
+<script>
+    document.querySelectorAll('.chip[data-scope]').forEach(function (chip) {
+        chip.addEventListener('click', function () {
+            var area = document.getElementById('scopes');
+            var values = area.value.split(/[\s,]+/).filter(Boolean);
+            if (values.indexOf(chip.dataset.scope) === -1) {
+                values.push(chip.dataset.scope);
+            }
+            area.value = values.join(', ');
+        });
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Страница не найдена')}"></head>
+<body class="error-body">
+<main class="error-wrap">
+    <div class="card error-card">
+        <div class="error-code" th:text="${status} ?: 404">404</div>
+        <h1>Страница не найдена</h1>
+        <p class="muted">Такой страницы или токена не существует (либо токен принадлежит другому владельцу).</p>
+        <p class="muted small" th:if="${path}">Запрошенный путь: <code th:text="${path}">/ui/tokens</code></p>
+        <div class="form-actions">
+            <a class="btn btn-primary" th:href="@{/}">На главную</a>
+        </div>
+    </div>
+</main>
+</body>
+</html>

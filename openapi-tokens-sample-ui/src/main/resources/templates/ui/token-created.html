@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Токен создан')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: navbar('user')}"></header>
+
+<main class="page page-narrow">
+    <div class="page-head">
+        <div>
+            <h1>Токен создан</h1>
+            <p class="muted">
+                Это единственный раз, когда секретная часть токена доступна в открытом виде.
+            </p>
+        </div>
+    </div>
+
+    <div class="alert alert-warn">
+        Скопируйте токен сейчас и сохраните его в надёжном месте. Повторно он не отображается —
+        в базе хранится только хеш секрета.
+    </div>
+
+    <div class="card">
+        <div class="token-box">
+            <code id="rawToken" th:text="${rawToken}">atk_abcd1234_secret</code>
+            <button class="btn" type="button" id="copyToken">Скопировать</button>
+        </div>
+
+        <dl class="kv">
+            <dt>Название</dt>
+            <dd th:text="${token.name}">ci-bot</dd>
+            <dt>Префикс</dt>
+            <dd><code th:text="${token.prefix}">abcd1234</code></dd>
+            <dt>Scopes</dt>
+            <dd><span class="scopes" th:text="${token.scopeLabel}">payments:read</span></dd>
+            <dt>Создан</dt>
+            <dd th:text="${token.createdAtLabel}">01.01.2026 10:00</dd>
+            <dt>Истекает</dt>
+            <dd th:text="${token.expiresAtLabel}">бессрочно</dd>
+            <dt>Sliding TTL</dt>
+            <dd th:text="${token.slidingTtlLabel}">выключен</dd>
+            <dt>Rate limit</dt>
+            <dd th:text="${token.rateLimitLabel}">не ограничен</dd>
+        </dl>
+
+        <h2>Как использовать</h2>
+        <pre class="code">curl -H "Authorization: Bearer &lt;ваш токен&gt;" <span th:text="${baseUrl} + '/api/demo/payments'"></span></pre>
+
+        <div class="form-actions">
+            <a class="btn btn-primary" th:href="@{/ui/tokens/{id}(id=${token.id})}">Открыть карточку токена</a>
+            <a class="btn btn-ghost" th:href="@{/ui/tokens}">К списку токенов</a>
+        </div>
+    </div>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+
+<script>
+    document.getElementById('copyToken').addEventListener('click', function () {
+        var text = document.getElementById('rawToken').textContent;
+        var button = this;
+        var done = function () {
+            button.textContent = 'Скопировано';
+            setTimeout(function () {
+                button.textContent = 'Скопировать';
+            }, 2000);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, done);
+        } else {
+            var range = document.createRange();
+            range.selectNodeContents(document.getElementById('rawToken'));
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            done();
+        }
+    });
+</script>
+</body>
+</html>

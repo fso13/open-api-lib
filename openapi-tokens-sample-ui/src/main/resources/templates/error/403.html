@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Доступ запрещён')}"></head>
+<body class="error-body">
+<main class="error-wrap">
+    <div class="card error-card">
+        <div class="error-code" th:text="${status} ?: 403">403</div>
+        <h1>Доступ запрещён</h1>
+        <p class="muted">
+            Для этого раздела нужна роль <strong>ADMIN</strong>. Войдите пользователем с правами
+            администратора (в демо-приложении это <code>admin / admin</code>).
+        </p>
+        <p class="muted small" th:if="${path}">Запрошенный путь: <code th:text="${path}">/admin/tokens</code></p>
+        <div class="form-actions">
+            <a class="btn btn-primary" th:href="@{/}">На главную</a>
+            <form th:action="@{/logout}" method="post">
+                <button class="btn btn-ghost" type="submit">Сменить пользователя</button>
+            </form>
+        </div>
+    </div>
+</main>
+</body>
+</html>

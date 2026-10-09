@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:fragment="head(title)">
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title th:text="${title} + ' · OpenAPI Tokens'">OpenAPI Tokens</title>
+    <link rel="stylesheet" th:href="@{/css/app.css}"/>
+    <link rel="icon" href="data:,"/>
+</head>
+<body>
+
+<header th:fragment="navbar(active)" class="topbar">
+    <div class="topbar-inner">
+        <a class="brand" th:href="@{/}">
+            <span class="brand-mark">atk</span>
+            <span>OpenAPI Tokens</span>
+        </a>
+        <nav class="nav">
+            <a th:href="@{/ui/tokens}" th:classappend="${active == 'user'} ? 'active' : ''">Мои токены</a>
+            <a th:href="@{/ui/scopes}" th:classappend="${active == 'scopes'} ? 'active' : ''">Скоупы</a>
+            <a th:if="${isAdmin}" th:href="@{/admin/tokens}"
+               th:classappend="${active == 'admin'} ? 'active' : ''">Админка</a>
+        </nav>
+        <div class="topbar-user" th:if="${currentUser}">
+            <span class="user" th:text="${currentUser}">demo</span>
+            <form th:action="@{/logout}" method="post">
+                <button type="submit" class="btn btn-ghost">Выйти</button>
+            </form>
+        </div>
+    </div>
+</header>
+
+<div th:fragment="flash" class="flash">
+    <div class="alert alert-ok" th:if="${success}" th:text="${success}">ok</div>
+    <div class="alert alert-error" th:if="${error}" th:text="${error}">error</div>
+</div>
+
+<span th:fragment="status(token)" class="badge" th:classappend="'badge-' + ${token.statusCss}"
+      th:text="${token.statusLabel}">Активен</span>
+
+<div th:fragment="tokenTable(tokens, ownerVisible, listPath)" class="card table-card">
+    <table class="table">
+        <thead>
+        <tr>
+            <th>Название</th>
+            <th>Префикс</th>
+            <th th:if="${ownerVisible}">Владелец</th>
+            <th>Статус</th>
+            <th>Scopes</th>
+            <th>Создан</th>
+            <th>Истекает</th>
+            <th>Использован</th>
+            <th class="actions-col"></th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="token : ${tokens}">
+            <td>
+                <a class="strong" th:href="@{${listPath} + '/' + ${token.id}}" th:text="${token.name}">ci-bot</a>
+                <div class="muted small" th:if="${token.description}" th:text="${token.description}"></div>
+            </td>
+            <td><code th:text="${token.prefix}">abcd1234</code></td>
+            <td th:if="${ownerVisible}" th:text="${token.ownerId}">demo</td>
+            <td><span th:replace="~{fragments/layout :: status(${token})}">Активен</span></td>
+            <td><span class="scopes" th:text="${token.scopeLabel}">payments:read</span></td>
+            <td class="nowrap" th:text="${token.createdAtLabel}">01.01.2026 10:00</td>
+            <td class="nowrap">
+                <span th:text="${token.expiresAtLabel}">бессрочно</span>
+                <span class="hint" th:if="${token.expiringSoon}">скоро истечёт</span>
+            </td>
+            <td class="nowrap" th:text="${token.lastUsedAtLabel}">не использовался</td>
+            <td class="actions-col">
+                <a class="btn btn-small" th:href="@{${listPath} + '/' + ${token.id}}">Открыть</a>
+            </td>
+        </tr>
+        <tr th:if="${#lists.isEmpty(tokens)}">
+            <td class="empty" th:colspan="${ownerVisible} ? 9 : 8">Токены не найдены</td>
+        </tr>
+        </tbody>
+    </table>
+</div>
+
+<dl th:fragment="tokenMeta(token, ownerVisible)" class="kv">
+    <dt>Название</dt>
+    <dd th:text="${token.name}">ci-bot</dd>
+    <dt>Описание</dt>
+    <dd th:text="${token.description} ?: '—'">—</dd>
+    <dt>Префикс</dt>
+    <dd><code th:text="${token.prefix}">abcd1234</code></dd>
+    <dt th:if="${ownerVisible}">Владелец</dt>
+    <dd th:if="${ownerVisible}" th:text="${token.ownerId}">demo</dd>
+    <dt>tenantId</dt>
+    <dd th:text="${token.tenantId} ?: '—'">—</dd>
+    <dt>Статус</dt>
+    <dd><span th:replace="~{fragments/layout :: status(${token})}">Активен</span></dd>
+    <dt>Scopes</dt>
+    <dd><span class="scopes" th:text="${token.scopeLabel}">payments:read</span></dd>
+    <dt>ID</dt>
+    <dd><code th:text="${token.id}">00000000-0000-0000-0000-000000000000</code></dd>
+    <dt>Создан</dt>
+    <dd th:text="${token.createdAtLabel}">01.01.2026 10:00</dd>
+    <dt>Истекает</dt>
+    <dd>
+        <span th:text="${token.expiresAtLabel}">бессрочно</span>
+        <span class="hint" th:if="${token.expiringSoon}">скоро истечёт</span>
+    </dd>
+    <dt>Sliding TTL</dt>
+    <dd th:text="${token.slidingTtlLabel}">выключен</dd>
+    <dt>Rate limit</dt>
+    <dd th:text="${token.rateLimitLabel}">не ограничен</dd>
+    <dt>Использован</dt>
+    <dd th:text="${token.lastUsedAtLabel}">не использовался</dd>
+    <dt th:if="${token.revokedAtLabel}">Отозван</dt>
+    <dd th:if="${token.revokedAtLabel}" th:text="${token.revokedAtLabel}">01.01.2026 10:00</dd>
+</dl>
+
+<section th:fragment="usageCards(usage)" class="cards">
+    <div class="stat">
+        <span class="stat-value" th:text="${usage.totalRequests}">0</span>
+        <span class="stat-label">Всего вызовов</span>
+    </div>
+    <div class="stat stat-ok">
+        <span class="stat-value" th:text="${usage.successfulRequests}">0</span>
+        <span class="stat-label">Успешных</span>
+    </div>
+    <div class="stat stat-danger">
+        <span class="stat-value" th:text="${usage.failedRequests}">0</span>
+        <span class="stat-label">Отклонённых</span>
+    </div>
+    <div class="stat stat-muted">
+        <span class="stat-value" th:text="${usage.failureRateLabel}">—</span>
+        <span class="stat-label">Доля ошибок</span>
+    </div>
+    <div class="stat stat-muted">
+        <span class="stat-value stat-value-text" th:text="${usage.lastUsedAtLabel}">не использовался</span>
+        <span class="stat-label">Последний вызов</span>
+    </div>
+</section>
+
+<div th:fragment="auditTable(entries)" class="card table-card">
+    <table class="table">
+        <thead>
+        <tr>
+            <th>Время</th>
+            <th>Действие</th>
+            <th>Результат</th>
+            <th>Запрос</th>
+            <th>Код</th>
+            <th>IP</th>
+            <th>User-Agent</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="entry : ${entries}">
+            <td class="nowrap" th:text="${entry.createdAtLabel}">01.01.2026 10:00</td>
+            <td th:text="${entry.action}">AUTHENTICATE</td>
+            <td>
+                <span class="badge" th:classappend="${entry.success} ? 'badge-ok' : 'badge-danger'"
+                      th:text="${entry.resultLabel}">Успешно</span>
+            </td>
+            <td><code th:text="${entry.requestLabel}">GET /api/demo/payments</code></td>
+            <td th:text="${entry.responseStatus}">200</td>
+            <td th:text="${entry.ip}">127.0.0.1</td>
+            <td class="muted small" th:text="${entry.userAgent}">curl/8.0</td>
+        </tr>
+        <tr th:if="${#lists.isEmpty(entries)}">
+            <td class="empty" colspan="7">Записей нет</td>
+        </tr>
+        </tbody>
+    </table>
+</div>
+
+<div th:fragment="scopeTable(scopes)" class="card table-card">
+    <table class="table">
+        <thead>
+        <tr>
+            <th>Скоуп</th>
+            <th>Описание</th>
+            <th>Даёт права</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="scope : ${scopes}">
+            <td><code th:text="${scope.scope}">payments:read</code></td>
+            <td th:text="${scope.description} ?: '—'">Чтение платежей</td>
+            <td><span class="scopes" th:text="${scope.authoritiesLabel} ?: '—'">readPayment</span></td>
+        </tr>
+        <tr th:if="${#lists.isEmpty(scopes)}">
+            <td class="empty" colspan="3">
+                Справочник пуст. Опишите скоупы в <code>openapi.tokens.scopes.catalog</code>
+                или в таблице <code>scope_catalog</code>.
+            </td>
+        </tr>
+        </tbody>
+    </table>
+</div>
+
+<footer th:fragment="footer" class="footer">
+    <span>openapi-tokens sample · UI для пользователя и администратора</span>
+    <span class="muted">REST API: <code>/api/openapi/tokens</code> · <code>/api/openapi/admin/tokens</code></span>
+</footer>
+
+</body>
+</html>

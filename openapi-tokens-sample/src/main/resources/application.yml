@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: openapi-tokens-sample
+  datasource:
+    url: jdbc:postgresql://localhost:5432/openapi_tokens
+    username: openapi
+    password: openapi
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+openapi:
+  tokens:
+    enabled: true
+    auth:
+      mode: internal
+    scopes:
+      mode: identity
+      # Справочник скоупов: имя → человекочитаемое описание.
+      # Отдаётся через GET /api/openapi/scopes и рендерится в UI (/ui/scopes, форма создания токена).
+      # Описание из таблицы scope_catalog переопределяет значение из конфига.
+      # ВАЖНО: ключи со спецсимволами (например ':') в YAML пишутся в квадратных скобках,
+      # иначе Spring теряет ':' при биндинге Map<String, String>.
+      catalog:
+        "[payments:read]": "Чтение платежей — открывает GET /api/demo/payments"
+        "[payments:write]": "Изменение платежей — зарезервировано для платёжных операций"
+        "[demo:read]": "Базовый доступ к демо-API"
+        "[reports:read]": "Чтение отчётов — пример скоупа, объявленного заранее"
+    hashing:
+      algorithm: argon2
+    limits:
+      max-tokens-per-owner: 10
+
+logging:
+  level:
+    ru.openapi.tokens: INFO

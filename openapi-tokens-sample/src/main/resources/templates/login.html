@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Вход')}"></head>
+<body class="login-body">
+<main class="login-wrap">
+    <div class="login-card">
+        <div class="brand brand-large">
+            <span class="brand-mark">atk</span>
+            <span>OpenAPI Tokens</span>
+        </div>
+        <h1>Вход в консоль</h1>
+        <p class="muted">Управление API-токенами: пользовательская и административная панели.</p>
+
+        <div class="alert alert-error" th:if="${param.error}">Неверный логин или пароль</div>
+        <div class="alert alert-ok" th:if="${param.logout}">Вы вышли из системы</div>
+
+        <form th:action="@{/login}" method="post" class="login-form">
+            <label>
+                Логин
+                <input type="text" name="username" autofocus autocomplete="username" required/>
+            </label>
+            <label>
+                Пароль
+                <input type="password" name="password" autocomplete="current-password" required/>
+            </label>
+            <button class="btn btn-primary btn-block" type="submit">Войти</button>
+        </form>
+
+        <div class="login-hint">
+            <span>Демо-доступ:</span>
+            <code>demo / demo</code>
+            <code>admin / admin</code>
+        </div>
+    </div>
+</main>
+</body>
+</html>

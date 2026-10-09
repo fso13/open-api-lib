@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Мои токены')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: navbar('user')}"></header>
+
+<main class="page">
+    <div th:replace="~{fragments/layout :: flash}"></div>
+
+    <div class="page-head">
+        <div>
+            <h1>Мои API-токены</h1>
+            <p class="muted">
+                Токены принадлежат вашему owner-id. Секретная часть показывается один раз — при создании.
+            </p>
+        </div>
+        <a class="btn btn-primary" th:href="@{/ui/tokens/new}">Создать токен</a>
+    </div>
+
+    <section class="cards">
+        <div class="stat">
+            <span class="stat-value" th:text="${counters.total}">0</span>
+            <span class="stat-label">Всего</span>
+        </div>
+        <div class="stat stat-ok">
+            <span class="stat-value" th:text="${counters.active}">0</span>
+            <span class="stat-label">Активных</span>
+        </div>
+        <div class="stat stat-warn">
+            <span class="stat-value" th:text="${counters.blocked}">0</span>
+            <span class="stat-label">Заблокировано</span>
+        </div>
+        <div class="stat stat-danger">
+            <span class="stat-value" th:text="${counters.revoked}">0</span>
+            <span class="stat-label">Отозвано</span>
+        </div>
+        <div class="stat stat-muted">
+            <span class="stat-value" th:text="${counters.expired}">0</span>
+            <span class="stat-label">Истекло</span>
+        </div>
+    </section>
+
+    <form class="filters" method="get" th:action="@{/ui/tokens}">
+        <input type="search" name="q" th:value="${filter.q}" placeholder="Поиск: название или префикс"/>
+        <select name="status">
+            <option th:each="option : ${statusOptions}"
+                    th:value="${option.value}"
+                    th:text="${option.label}"
+                    th:selected="${filter.statusOrDefault() == option.value}">Все статусы</option>
+        </select>
+        <button class="btn" type="submit">Применить</button>
+        <a class="btn btn-ghost" th:href="@{/ui/tokens}">Сбросить</a>
+    </form>
+
+    <div th:replace="~{fragments/layout :: tokenTable(${tokens}, false, '/ui/tokens')}"></div>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

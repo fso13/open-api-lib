@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('Справочник скоупов')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: navbar('scopes')}"></header>
+
+<main class="page">
+    <div class="page-head">
+        <div>
+            <h1>Справочник скоупов</h1>
+            <p class="muted">
+                Все известные скоупы с описанием и правами, которые они выдают. Источник данных —
+                <code>GET /api/openapi/scopes</code> (конфиг <code>openapi.tokens.scopes.catalog</code>
+                + таблица <code>scope_catalog</code>).
+            </p>
+        </div>
+        <span class="badge badge-muted" th:text="'режим: ' + ${scopesMode}">режим: identity</span>
+    </div>
+
+    <p class="alert alert-warn">
+        В режиме <code>identity</code> имя скоупа выдаётся как authority напрямую (колонка
+        «Даёт права» остаётся пустой), в режиме <code>mapped</code> скоуп проецируется в набор
+        project-authorities из <code>openapi.tokens.scopes.mappings</code> и таблицы
+        <code>scope_mapping</code>.
+    </p>
+
+    <div th:replace="~{fragments/layout :: scopeTable(${scopes})}"></div>
+
+    <p class="muted small">
+        <a th:href="@{/ui/tokens/new}">Создать токен с этими скоупами</a>
+    </p>
+</main>
+
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>
