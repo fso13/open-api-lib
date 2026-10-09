@@ -1,0 +1,35 @@
+# Сборка и публикация сайта документации на GitLab Pages.
+#
+# GitLab Pages публикует содержимое каталога `public/` из артефактов job'а `pages`.
+# После первого успешного pipeline сайт будет доступен по адресу из переменной CI_PAGES_URL
+# (обычно https://<namespace>.gitlab.io/<project>/).
+
+stages:
+  - test
+  - docs
+
+# Существующие стадии сборки/тестов проекта (Gradle) при необходимости добавьте сюда —
+# job ниже от них не зависит.
+
+pages:
+  stage: docs
+  image: python:3.12-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key: docs-pip
+    paths:
+      - .cache/pip
+  before_script:
+    - pip install --no-cache-dir -r requirements-docs.txt
+  script:
+    - mkdocs build --strict --site-dir public
+  artifacts:
+    paths:
+      - public
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  environment:
+    name: pages
+    url: $CI_PAGES_URL

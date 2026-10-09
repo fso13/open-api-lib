@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AmplicodePersistenceUnitSettings">
+    <persistence-units>
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-sample.main" name="Default">
+        <packages>
+          <package value="ru.openapi.tokens.sample" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-persistence-jpa.main" name="Default">
+        <packages>
+          <package value="ru.openapi.tokens.persistence.internal" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-sample-keycloak.main" name="Default">
+        <packages>
+          <package value="ru.openapi.tokens.sample.keycloak" />
+        </packages>
+      </persistence-unit>
+    </persistence-units>
+  </component>
+</project>
