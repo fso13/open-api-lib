@@ -245,12 +245,12 @@ sequenceDiagram
 - Create: `README.md` (stub)
 - Create: `.gitignore`
 
-- [ ] create root Gradle multi-module with Java 21, Spring Boot 3.3+/3.4 BOM
-- [ ] create empty modules: core, persistence-jpa, security, web, autoconfigure, starter
-- [ ] wire inter-module dependencies (starter → autoconfigure → others)
-- [ ] add shared test conventions (JUnit 5, AssertJ, Mockito)
-- [ ] write smoke test: root builds successfully (`./gradlew build`)
-- [ ] run tests — must pass before task 2
+- [x] create root Gradle multi-module with Java 21, Spring Boot 3.3+/3.4 BOM
+- [x] create empty modules: core, persistence-jpa, security, web, autoconfigure, starter
+- [x] wire inter-module dependencies (starter → autoconfigure → others)
+- [x] add shared test conventions (JUnit 5, AssertJ, Mockito)
+- [x] write smoke test: root builds successfully (`./gradlew build`)
+- [x] run tests — must pass before task 2
 
 ### Task 2: Core domain model + ports (no Spring)
 
@@ -260,12 +260,12 @@ sequenceDiagram
 - Create: domain exceptions
 - Create: unit tests for value objects / token format
 
-- [ ] define `ApiToken`, `TokenStatus`, `TokenScope`, `TokenCredentials` (prefix+hash), TTL VOs
-- [ ] define ports listed in Solution Overview
-- [ ] define create/revoke commands as records (immutable)
-- [ ] write unit tests for token format parsing and TTL/sliding expiry rules
-- [ ] write unit tests for domain invariants (empty scopes, quota exceeded exceptions)
-- [ ] run tests — must pass before task 3
+- [x] define `ApiToken`, `TokenStatus`, `TokenScope`, `TokenCredentials` (prefix+hash), TTL VOs
+- [x] define ports listed in Solution Overview
+- [x] define create/revoke commands as records (immutable)
+- [x] write unit tests for token format parsing and TTL/sliding expiry rules
+- [x] write unit tests for domain invariants (empty scopes, quota exceeded exceptions)
+- [x] run tests — must pass before task 3
 
 ### Task 3: TokenHasher (Argon2 / BCrypt) — TDD
 
@@ -273,10 +273,10 @@ sequenceDiagram
 - Create: `Argon2TokenHasher`, `BcryptTokenHasher`, factory
 - Create: unit tests
 
-- [ ] write failing tests for hash/matches roundtrip and mismatch
-- [ ] implement Argon2id hasher (default)
-- [ ] implement BCrypt hasher
-- [ ] run tests — must pass before task 4
+- [x] write failing tests for hash/matches roundtrip and mismatch
+- [x] implement Argon2id hasher (default)
+- [x] implement BCrypt hasher
+- [x] run tests — must pass before task 4
 
 ### Task 4: ScopeResolver strategies — TDD
 
@@ -284,10 +284,10 @@ sequenceDiagram
 - Create: `IdentityScopeResolver`, `MappedScopeResolver`, `CompositeMappingSource` (config+DB)
 - Create: unit tests + BDD feature `scopes-resolution.feature`
 
-- [ ] write feature + unit tests for 1:1 identity mode
-- [ ] write feature + unit tests for 1:M mapped mode (config + DB merge)
-- [ ] implement resolvers
-- [ ] run tests — must pass before task 5
+- [x] write feature + unit tests for 1:1 identity mode
+- [x] write feature + unit tests for 1:M mapped mode (config + DB merge)
+- [x] implement resolvers
+- [x] run tests — must pass before task 5
 
 ### Task 5: In-memory RateLimiter (Bucket4j) — TDD
 
@@ -295,9 +295,9 @@ sequenceDiagram
 - Create: `Bucket4jRateLimiter` implementing `RateLimiter`
 - Create: unit tests
 
-- [ ] write failing tests: allow within limit, deny over limit, per-token isolation, window reset
-- [ ] implement Bucket4j-backed limiter (token-specific limits from token entity)
-- [ ] run tests — must pass before task 6
+- [x] write failing tests: allow within limit, deny over limit, per-token isolation, window reset
+- [x] implement Bucket4j-backed limiter (token-specific limits from token entity)
+- [x] run tests — must pass before task 6
 
 ### Task 6: JPA persistence + Flyway
 
@@ -310,12 +310,12 @@ sequenceDiagram
 - Create: Testcontainers integration tests
 - Create: mappers entity ↔ domain (manual mapper class)
 
-- [ ] write Flyway V1 for all tables + indexes
-- [ ] implement JPA entities + repositories (LAZY associations)
-- [ ] implement port adapters + mappers (domain ↔ entity; no DTO leakage)
-- [ ] write Testcontainers tests: save/findByPrefix/scopes/mapping/audit insert
-- [ ] add ArchUnit rules for DTO/entity isolation where DTOs appear
-- [ ] run tests — must pass before task 7
+- [x] write Flyway V1 for all tables + indexes
+- [x] implement JPA entities + repositories (LAZY associations)
+- [x] implement port adapters + mappers (domain ↔ entity; no DTO leakage)
+- [x] write Testcontainers tests: save/findByPrefix/scopes/mapping/audit insert
+- [x] add ArchUnit rules for DTO/entity isolation where DTOs appear
+- [x] run tests — must pass before task 7
 
 ### Task 7: ApiTokenService (create / revoke / quota / sliding) — TDD
 
@@ -324,10 +324,10 @@ sequenceDiagram
 - Create: BDD `create-token.feature`, `revoke-token.feature`
 - Create: unit tests with mocked ports
 
-- [ ] write failing BDD + unit tests: create shows raw once, stores hash only, quota, revoke, block
-- [ ] implement service with `@Transactional` boundaries (mutations vs reads)
-- [ ] implement sliding expiration update on successful auth path (hook)
-- [ ] run tests — must pass before task 8
+- [x] write failing BDD + unit tests: create shows raw once, stores hash only, quota, revoke, block
+- [x] implement service with `@Transactional` boundaries (mutations vs reads)
+- [x] implement sliding expiration update on successful auth path (hook)
+- [x] run tests — must pass before task 8
 
 ### Task 8: Async AuditRecorder — TDD
 
@@ -335,10 +335,10 @@ sequenceDiagram
 - Create: `AsyncAuditRecorder`, audit event record
 - Create: unit/integration tests
 
-- [ ] write tests that all outcomes are recorded (success, 401, 403, 429)
-- [ ] implement async writer (`@Async` / executor) + JDBC/JPA sink
-- [ ] ensure audit failures do not break request path (log ERROR, swallow)
-- [ ] run tests — must pass before task 9
+- [x] write tests that all outcomes are recorded (success, 401, 403, 429)
+- [x] implement async writer (`@Async` / executor) + JDBC/JPA sink
+- [x] ensure audit failures do not break request path (log ERROR, swallow)
+- [x] run tests — must pass before task 9
 
 ### Task 9: Security integration — TDD
 
@@ -347,11 +347,11 @@ sequenceDiagram
 - Create: `TokenOwnerResolver` Internal + Keycloak
 - Create: security tests (`@WithMockUser` / MockMvc / pure unit)
 
-- [ ] write tests: valid token → authenticated + authorities; invalid/expired/revoked → 401
-- [ ] write tests: `@PreAuthorize` / `hasAuthority` with resolved scopes (both modes)
-- [ ] write tests: Keycloak owner resolver reads `sub` when mode=keycloak
-- [ ] implement filter + provider + evaluators + owner resolvers
-- [ ] run tests — must pass before task 10
+- [x] write tests: valid token → authenticated + authorities; invalid/expired/revoked → 401
+- [x] write tests: `@PreAuthorize` / `hasAuthority` with resolved scopes (both modes)
+- [x] write tests: Keycloak owner resolver reads `sub` when mode=keycloak
+- [x] implement filter + provider + evaluators + owner resolvers
+- [x] run tests — must pass before task 10
 
 ### Task 10: Web layer (user + admin REST) — TDD
 
@@ -360,10 +360,10 @@ sequenceDiagram
 - Create: BDD features for user/admin flows
 - Create: `@WebMvcTest` + MockMvc tests
 
-- [ ] write failing tests for user CRUD-ish endpoints + admin monitor/revoke/block
-- [ ] implement controllers returning DTOs only (records)
-- [ ] implement RFC 7807 exception handler
-- [ ] run tests — must pass before task 11
+- [x] write failing tests for user CRUD-ish endpoints + admin monitor/revoke/block
+- [x] implement controllers returning DTOs only (records)
+- [x] implement RFC 7807 exception handler
+- [x] run tests — must pass before task 11
 
 ### Task 11: Autoconfiguration + starter wiring
 
@@ -373,18 +373,18 @@ sequenceDiagram
 - Create: `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
 - Create: `@SpringBootTest` with `enabled=false` asserting no beans
 
-- [ ] implement properties + validation defaults
-- [ ] wire beans conditionally (enabled, auth.mode, scopes.mode, hashing, rate-limit)
-- [ ] starter POM/Gradle deps: bring autoconfigure + transitive modules
-- [ ] write tests: disabled starter brings zero token beans; enabled brings defaults
-- [ ] run tests — must pass before task 12
+- [x] implement properties + validation defaults
+- [x] wire beans conditionally (enabled, auth.mode, scopes.mode, hashing, rate-limit)
+- [x] starter POM/Gradle deps: bring autoconfigure + transitive modules
+- [x] write tests: disabled starter brings zero token beans; enabled brings defaults
+- [x] run tests — must pass before task 12
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify all functional requirements from original prompt covered
-- [ ] verify both scope modes, rate limit, audit-all, Keycloak/internal modes
-- [ ] run full suite: `./gradlew test`
-- [ ] verify coverage on core services/resolvers/hasher (document baseline)
+- [x] verify all functional requirements from original prompt covered
+- [x] verify both scope modes, rate limit, audit-all, Keycloak/internal modes
+- [x] run full suite: `./gradlew test`
+- [x] verify coverage on core services/resolvers/hasher (document baseline)
 
 ### Task 13: [Final] Documentation
 
@@ -392,9 +392,9 @@ sequenceDiagram
 - Modify: `README.md`
 - Move: this plan → `docs/plans/completed/`
 
-- [ ] README: add dependency, minimal config, create-token example, security snippet, Keycloak mode, scope mapping example
-- [ ] document extension points (custom `RateLimiter`, `TokenHasher`, store)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] README: add dependency, minimal config, create-token example, security snippet, Keycloak mode, scope mapping example
+- [x] document extension points (custom `RateLimiter`, `TokenHasher`, store)
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

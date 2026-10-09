@@ -1,0 +1,140 @@
+# Конфигурация статического сайта документации (MkDocs Material).
+#
+# Локальный предпросмотр:   mkdocs serve   → http://127.0.0.1:8000
+# Сборка статики:           mkdocs build   → каталог ./site
+#
+# Публикация:
+#   GitHub Pages — workflow .github/workflows/docs.yml (ветка gh-pages через actions/deploy-pages)
+#   GitLab Pages — job `pages` в .gitlab-ci.yml (артефакт ./public)
+#   Вручную      — mkdocs gh-deploy --force  (создаёт ветку gh-pages)
+
+site_name: open-api-lib
+site_description: >-
+  Reusable Spring Boot starter для API-токенов: выпуск и отзыв токенов, скоупы,
+  TTL, rate limiting, аудит и интеграция со Spring Security.
+site_author: open-api-lib team
+
+# Замените на адрес вашего сайта. CI подставляет значение из переменной окружения SITE_URL.
+site_url: !ENV [SITE_URL, "https://example.com/open-api-lib/"]
+
+# Замените/раскомментируйте, если репозиторий размещён на GitHub или GitLab —
+# тогда в шапке появится ссылка на исходники и кнопки «Edit this page».
+# repo_url: https://github.com/<owner>/open-api-lib
+# repo_name: <owner>/open-api-lib
+# edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Служебные документы планирования не публикуются на сайте (остаются в репозитории).
+exclude_docs: |
+  plans/**
+
+theme:
+  name: material
+  language: ru
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Тёмная тема
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Светлая тема
+  icon:
+    repo: fontawesome/brands/github
+
+extra:
+  generator: false
+
+nav:
+  - Главная: index.md
+  - Начало работы:
+      - Быстрый старт: getting-started.md
+      - Конфигурация: configuration.md
+  - Возможности:
+      - Обзор функций: features/index.md
+      - Жизненный цикл токена: features/token-lifecycle.md
+      - Скоупы и права: features/scopes.md
+      - Аутентификация и авторизация: features/security.md
+      - Rate limiting: features/rate-limiting.md
+      - Аудит и статистика: features/audit.md
+  - Архитектура:
+      - Обзор архитектуры: architecture/index.md
+      - Модель данных: architecture/data-model.md
+  - Справочник API:
+      - REST API: api/rest-api.md
+      - Java API: api/java-api.md
+      - Порты и точки расширения: api/spi.md
+  - Руководства:
+      - Бизнес-аналитику: guides/business-analyst.md
+      - Системному аналитику: guides/system-analyst.md
+      - Фронтенд-разработчику: guides/frontend.md
+      - Бэкенд-разработчику: guides/backend.md
+      - Web UI (server-side): guides/web-ui.md
+      - Keycloak: guides/keycloak.md
+  - Эксплуатация:
+      - Тестирование: operations/testing.md
+      - Публикация документации: operations/publishing.md
+      - Ограничения и roadmap: operations/roadmap.md
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 4
+      # Кириллические заголовки: стандартный slugify MkDocs вырезает не-ASCII
+      # символы и превращает все якоря в _1, _2, … Поэтому используем slugify
+      # из pymdown-extensions, который сохраняет Unicode.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search:
+      lang: ru
+
+extra_css:
+  - stylesheets/extra.css

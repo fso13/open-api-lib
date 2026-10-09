@@ -1,0 +1,34 @@
+/* Небольшие правки поверх темы Material. */
+
+/* Таблицы: справочники по свойствам и эндпоинтам получаются широкими —
+   разрешаем горизонтальную прокрутку вместо переноса колонок. */
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+.md-typeset table:not([class]) th {
+  white-space: nowrap;
+}
+
+/* Моноширинные идентификаторы внутри текста чуть компактнее. */
+.md-typeset code {
+  word-break: break-word;
+}
+
+/* Блоки «потоков» и диаграмм — с отступами, чтобы Mermaid не прилипал к тексту. */
+.md-typeset .mermaid {
+  margin: 1.5em 0;
+  text-align: center;
+}
+
+/* Плашки статусов в таблицах (например, ACTIVE / REVOKED). */
+.md-typeset .status-active {
+  color: var(--md-primary-fg-color);
+  font-weight: 700;
+}
+
+.md-typeset .status-dead {
+  color: var(--md-default-fg-color--light);
+  font-weight: 700;
+}
