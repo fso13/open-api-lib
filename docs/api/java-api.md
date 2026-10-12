@@ -20,6 +20,8 @@ public interface ApiTokenService {
 
     // административные операции (без проверки владельца)
     List<ApiToken> listAll();
+    List<ApiToken> listAll(int offset, int limit);   // постранично, новые первыми
+    long countAll();                                 // общее число токенов
     ApiToken getAny(UUID tokenId);
     ApiToken forceRevoke(RevokeTokenCommand command);
     ApiToken forceBlock(BlockTokenCommand command);
@@ -31,16 +33,23 @@ public interface ApiTokenService {
 
 | Метод | Проверка владельца | Транзакция | Исключения |
 |---|---|---|---|
-| `create` | владелец = текущий security context | `@Transactional` | `QuotaExceededException`, `EmptyScopesException` |
+| `create` | владелец = текущий security context | `@Transactional` | `InvalidScopeException`, `TenantNotAllowedException`, `QuotaExceededException`, `EmptyScopesException` |
 | `get` | да (чужой → `ApiTokenNotFoundException`) | read-only | `ApiTokenNotFoundException` |
 | `listOwn` | фильтр по владельцу | read-only | — |
 | `revoke` | да | `@Transactional` | `ApiTokenNotFoundException`, `InvalidTokenStateException` |
 | `block` | да | `@Transactional` | `ApiTokenNotFoundException`, `InvalidTokenStateException` |
 | `usageStats` | да | read-only | `ApiTokenNotFoundException` |
-| `listAll` | **нет** | read-only | — |
+| `listAll()` / `listAll(offset, limit)` | **нет** | read-only | — |
+| `countAll()` | **нет** | read-only | — |
 | `getAny` | **нет** | read-only | `ApiTokenNotFoundException` |
 | `forceRevoke` / `forceBlock` | **нет** | `@Transactional` | `ApiTokenNotFoundException`, `InvalidTokenStateException` |
 | `touchLastUsed` | **нет** | `@Transactional` | `ApiTokenNotFoundException`, `InvalidTokenStateException` |
+
+Порядок проверок в `create`: разрешение `tenantId` (чужой тенант → `TenantNotAllowedException`),
+затем **валидация скоупов** (`InvalidScopeException`), и только потом квота и генерация секрета —
+при отказе валидации в БД ничего не записывается. Квота считается по «рабочим» токенам
+(`ACTIVE` + `BLOCKED`), поэтому отзыв освобождает слот. Если в команде не заданы ни `expiresAt`,
+ни `slidingTtl`, подставляется `openapi.tokens.token.default-ttl`.
 
 !!! warning "Административные методы не проверяют права"
     `listAll`, `getAny`, `forceRevoke`, `forceBlock` не выполняют **никаких** проверок
@@ -112,7 +121,8 @@ token.description();
 token.credentials();        // TokenCredentials(prefix, tokenHash)
 token.ownerId();
 token.tenantId();
-token.status();             // TokenStatus
+token.status();             // TokenStatus, как хранится в БД
+token.effectiveStatus(Instant.now());  // ACTIVE → EXPIRED, если expiresAt уже прошёл
 token.scopes();             // Set<String> (unmodifiable)
 token.expiry();             // TokenExpiry
 token.rateLimit();          // RateLimitPolicy
@@ -194,9 +204,55 @@ checker.hasAnyAuthority("createPayment", "refundPayment");
 ```
 
 Реализация по умолчанию (`ApiTokenPermissionEvaluator`) читает authority из текущего
-`SecurityContext`. Бин объявлен с типом `ApiTokenPermissionChecker` — см. замечание
-в разделе [Аутентификация](../features/security.md#программные-проверки) про
-`PermissionEvaluator`.
+`SecurityContext`. Тот же экземпляр зарегистрирован и как бин `PermissionEvaluator`, поэтому
+при включённом method security работает и в SpEL:
+
+```java
+@PreAuthorize("hasPermission(#tokenId, 'ApiToken', 'tokens:revoke')")
+void revokeToken(UUID tokenId) { … }
+```
+
+`hasPermission(...)` использует переданную аутентификацию (а если она `null` — текущий
+`SecurityContext`), поэтому проверка не «прилипает» к чужому принципалу. Сам evaluator
+сравнивает `permission` с authority вызывающего — проверки владения токеном в него не входят.
+
+## `ScopeValidator` и `CallerAuthorityResolver`
+
+Политика валидации скоупов — отдельный порт, который вызывается сервисом до проверки квоты:
+
+```java
+public interface ScopeValidator {
+    void validate(ScopeValidationContext context);   // бросить InvalidScopeException при отказе
+    static ScopeValidator allowAll() { … }
+}
+```
+
+`ScopeValidationContext(ownerId, tenantId, requestedScopes, callerAuthorities, privileged)` —
+всё, что нужно для решения. Свой бин `ScopeValidator` полностью заменяет сборку по
+`scopes.validation.mode` (см. [Порты и SPI](spi.md)).
+
+Authority вызывающего для режима `strict` отдаёт `CallerAuthorityResolver`:
+
+```java
+@Autowired CallerAuthorityResolver resolver;
+
+resolver.currentAuthorities();   // Set<String>, пусто без аутентификации
+resolver.isPrivileged();         // true, если вызывающий в privileged-authorities
+```
+
+## `TokenHasher` и `TokenHasherFactory`
+
+```java
+TokenHasher hasher = TokenHasherFactory.create(HashingAlgorithm.BCRYPT);   // без тега
+
+// алгоритм-тегированный вариант (использует авто-конфигурация):
+TokenHasher tagged = TokenHasherFactory.createTagged(HashingAlgorithm.ARGON2);
+tagged.hash("secret");        // "{argon2}$argon2id$…"
+tagged.matches("secret", "{bcrypt}$2a$…");   // true — алгоритм берётся из тега
+```
+
+Смена `openapi.tokens.hashing.algorithm` не инвалидирует уже выданные токены: старые хеши
+проверяются алгоритмом из тега, а хеши без тега — по нативному префиксу (`$argon2…`, `$2a$…`).
 
 ## Команды и результаты
 
@@ -208,6 +264,7 @@ checker.hasAnyAuthority("createPayment", "refundPayment");
 | `CreatedApiToken(ApiToken token, RawToken rawToken)` | Результат создания: агрегат + одноразовый секрет |
 | `TokenUsageStats(tokenId, totalRequests, successfulRequests, failedRequests, lastUsedAt)` | Статистика |
 | `ScopeInfo(scope, description, projectScopes)` | Элемент справочника |
+| `ScopeValidationContext(ownerId, tenantId, requestedScopes, callerAuthorities, privileged)` | Контекст валидации скоупов |
 | `TokenOwner(ownerId, tenantId)` | Владелец из security context |
 | `AuditEvent(...)` | Событие аудита |
 
@@ -218,7 +275,10 @@ checker.hasAnyAuthority("createPayment", "refundPayment");
 | `ApiTokenNotFoundException` | Токен не найден **или** принадлежит другому владельцу | `API token not found: {id}` |
 | `QuotaExceededException` | Достигнут лимит токенов владельца | `Token quota exceeded for owner '{owner}': max {N}` |
 | `EmptyScopesException` | Пустой набор скоупов | `Token must have at least one scope` |
+| `InvalidScopeException` | Скоупы не прошли валидацию (`UNKNOWN_SCOPE` / `DENIED_SCOPE` / `NOT_GRANTABLE`); несёт `getReason()` и `getInvalidScopes()` | `Invalid scopes (UNKNOWN_SCOPE): [scope]` |
+| `TenantNotAllowedException` | Запрошен чужой `tenantId` при `allow-tenant-override=false` | `Tenant override is not allowed: requested '…', owner tenant '…'` |
 | `InvalidTokenStateException` | Недопустимый переход статуса | например `Only ACTIVE tokens can be blocked` |
+| `ConcurrentTokenModificationException` | Конкурентное изменение токена (optimistic locking) | — |
 | `InvalidTokenFormatException` | Строка не соответствует `atk_<prefix>_<secret>` | `expected format atk_<prefix>_<secret>` |
 
 Все они — `RuntimeException`; в REST-слое их переводит в `ProblemDetail`
@@ -227,11 +287,19 @@ checker.hasAnyAuthority("createPayment", "refundPayment");
 ## Репозитории (для собственных запросов)
 
 ```java
-@Autowired ApiTokenRepository tokenRepository;   // save/findById/findByPrefix/findByOwnerId/findAll/countByOwnerId/deleteById
-@Autowired AuditLogRepository auditRepository;   // append/findByTokenId/usageStats
+@Autowired ApiTokenRepository tokenRepository;
+//   save, findById, findByPrefix, findByOwnerId, findAll, countByOwnerId, deleteById
+//   + default: findPage(offset, limit), count(), countUsableByOwnerId(ownerId),
+//     lockOwnerQuota(ownerId), touchLastUsed(id, lastUsedAt)
+
+@Autowired AuditLogRepository auditRepository;   // append/findByTokenId(tokenId, offset, limit)/usageStats
 @Autowired ScopeCatalogRepository scopeCatalogRepository;      // findAll/save/deleteByScope
 @Autowired ScopeMappingRepository scopeMappingRepository;      // findByTokenScopes/findAll/save/deleteById
 ```
+
+У `ScopeMappingSource` есть батчевый `projectScopesFor(Set<String>, tenantId)`, у `RateLimiter` —
+`tryAcquire(String key, policy)` и `reset(String key)`. Подробнее о контрактах —
+[Порты и SPI](spi.md#изменения-в-портах-после-усиления-безопасности).
 
 Это порты ядра; в JPA-профиле за ними стоят адаптеры модуля `openapi-tokens-persistence-jpa`.
 

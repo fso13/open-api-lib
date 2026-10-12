@@ -7,33 +7,40 @@
 
 | # | Функция | Что делает | Управляется | Детали |
 |---|---|---|---|---|
-| 1 | **Выпуск токена** | Создаёт токен, генерирует секрет, возвращает его **один раз** | `POST /api/openapi/tokens`, `ApiTokenService#create` | [Жизненный цикл](token-lifecycle.md) |
+| 1 | **Выпуск токена** | Создаёт токен, генерирует секрет, возвращает его **один раз** (`Cache-Control: no-store`) | `POST /api/openapi/tokens`, `ApiTokenService#create` | [Жизненный цикл](token-lifecycle.md) |
 | 2 | **Формат токена** | `atk_<prefix>_<secret>`: префикс для поиска + 32 байта энтропии | `openapi.tokens.token.prefix-length` (4…16) | [Аутентификация](security.md) |
-| 3 | **Хеширование секрета** | Argon2id (по умолчанию) или BCrypt; секрет в БД не хранится | `openapi.tokens.hashing.algorithm` | [Аутентификация](security.md) |
-| 4 | **Отзыв токена** | Необратимый переход в `REVOKED` | `DELETE /api/openapi/tokens/{id}`, `.../admin/tokens/{id}` | [Жизненный цикл](token-lifecycle.md) |
-| 5 | **Блокировка / разблокировка** | Временное отключение токена администратором | `POST .../admin/tokens/{id}/block|unblock` | [Жизненный цикл](token-lifecycle.md) |
-| 6 | **Квота токенов на владельца** | Запрет создавать больше N токенов | `openapi.tokens.limits.max-tokens-per-owner` | [Жизненный цикл](token-lifecycle.md) |
-| 7 | **Абсолютный TTL** | Токен перестаёт работать после `expiresAt` | `expiresAt` при создании | [Жизненный цикл](token-lifecycle.md) |
+| 3 | **Хеширование секрета** | Argon2id (по умолчанию) или BCrypt; хеш хранится с тегом алгоритма (`{argon2}`/`{bcrypt}`), поэтому смена алгоритма не инвалидирует токены | `openapi.tokens.hashing.algorithm` | [Аутентификация](security.md#хеширование-секрета) |
+| 4 | **Отзыв токена** | Необратимый переход в `REVOKED`; пользовательский `DELETE` идемпотентен (204) | `DELETE /api/openapi/tokens/{id}`, `.../admin/tokens/{id}` | [Жизненный цикл](token-lifecycle.md#правила-переходов) |
+| 5 | **Блокировка / разблокировка** | Временное отключение токена администратором | `POST .../admin/tokens/{id}/block\|unblock` | [Жизненный цикл](token-lifecycle.md) |
+| 6 | **Квота токенов на владельца** | Запрет создавать больше N **используемых** (`ACTIVE`/`BLOCKED`) токенов; отзыв освобождает слот, конкурентные создания сериализуются advisory-lock'ом | `openapi.tokens.limits.max-tokens-per-owner` | [Жизненный цикл](token-lifecycle.md#квота-важные-детали) |
+| 7 | **Абсолютный TTL** | Токен перестаёт работать после `expiresAt`; если клиент не задал TTL, применяется `default-ttl` (90 дней) | `expiresAt` при создании, `openapi.tokens.token.default-ttl` | [Жизненный цикл](token-lifecycle.md#сроки-жизни-ttl) |
 | 8 | **Скользящий TTL** | Срок продлевается при каждом успешном обращении | `slidingTtlSeconds` при создании | [Жизненный цикл](token-lifecycle.md) |
 | 9 | **Скоупы 1:1 (`identity`)** | Скоуп токена = право приложения | `openapi.tokens.scopes.mode=identity` | [Скоупы](scopes.md) |
 | 10 | **Скоупы 1:M (`mapped`)** | Скоуп токена разворачивается в набор прав | `openapi.tokens.scopes.mode=mapped` + `mappings` | [Скоупы](scopes.md) |
 | 11 | **Маппинги из БД** | Таблица `scope_mapping`, приоритетнее конфига | `ScopeMappingRepository` | [Скоупы](scopes.md) |
-| 12 | **Справочник скоупов** | Список скоупов с человекочитаемыми описаниями | `scopes.catalog` + таблица `scope_catalog` | [Скоупы](scopes.md) |
-| 13 | **Rate limiting** | Лимит запросов на токен в окне | `rateLimitRequests` / `rateLimitWindowSeconds` при создании | [Rate limiting](rate-limiting.md) |
-| 14 | **Аутентификация по Bearer** | Заголовок `Authorization: Bearer atk_…` | `openapi.tokens.token.header` / `bearer-prefix` | [Аутентификация](security.md) |
-| 15 | **Режим `internal`** | Владелец токена = текущий `Authentication` / `UserDetails` | `openapi.tokens.auth.mode=internal` | [Аутентификация](security.md) |
-| 16 | **Режим `keycloak`** | Владелец = JWT `sub`, тенант = настраиваемый claim | `openapi.tokens.auth.mode=keycloak` | [Аутентификация](security.md) |
-| 17 | **Авторизация прав** | Скоупы становятся authority → `@PreAuthorize("hasAuthority('…')")` | Spring Security в приложении | [Аутентификация](security.md) |
-| 18 | **Готовый SecurityFilterChain** | Защита `/api/openapi/**`, админка требует `ROLE_ADMIN` | бин `openapiTokensSecurityFilterChain` | [Аутентификация](security.md) |
-| 19 | **Аудит обращений** | Событие аутентификации с методом, URL, IP, UA, статусом | `openapi.tokens.audit.*` | [Аудит](audit.md) |
-| 20 | **Статистика использования** | Всего / успешных / неуспешных запросов, последнее использование | `GET /api/openapi/tokens/{id}/stats` | [Аудит](audit.md) |
-| 21 | **Журнал аудита по токену** | Последние N событий (50 у пользователя, 100 у админа) | `GET .../{id}/audit` | [Аудит](audit.md) |
-| 22 | **Админский API** | Список всех токенов, карточка любого токена, принудительный отзыв | `GET/DELETE /api/openapi/admin/tokens` | [REST API](../api/rest-api.md) |
-| 23 | **Java API** | `ApiTokenService`, `ScopeCatalog`, `ApiTokenPermissionChecker` | бины Spring | [Java API](../api/java-api.md) |
-| 24 | **Точки расширения (SPI)** | Замена любого компонента своим бином | `@ConditionalOnMissingBean` | [Порты и SPI](../api/spi.md) |
-| 25 | **Отключение целиком** | Ни один бин статера не регистрируется | `openapi.tokens.enabled=false` | [Конфигурация](../configuration.md) |
-| 26 | **Демо-приложение** | REST + server-rendered UI пользователя и администратора | модули `sample`, `sample-ui` | [Web UI](../guides/web-ui.md) |
-| 27 | **Миграции Flyway** | Схема БД поставляется вместе с библиотекой | `db/migration/V1…V2` | [Модель данных](../architecture/data-model.md) |
+| 12 | **Справочник скоупов** | Список скоупов с человекочитаемыми описаниями; project-права резолвятся одним батчевым запросом | `scopes.catalog` + таблица `scope_catalog` | [Скоупы](scopes.md) |
+| 13 | **Валидация скоупов** | Fail-closed проверка запрошенных скоупов: deny-шаблоны + справочник + (в `strict`) права вызывающего; отказ — 422 | `openapi.tokens.scopes.validation.*` | [Скоупы](scopes.md#валидация-скоупов-при-создании-токена) |
+| 14 | **Тенант из запроса** | Чужой `tenantId` при создании отклоняется (403), пока не включён override | `openapi.tokens.scopes.allow-tenant-override` | [Скоупы](scopes.md#тенант-из-запроса-allow-tenant-override) |
+| 15 | **Rate limiting** | Лимит запросов на токен в окне; ведро ключуется по `tokenId`, карта ограничена (LRU) | `rateLimitRequests` / `rateLimitWindowSeconds` при создании | [Rate limiting](rate-limiting.md) |
+| 16 | **Пре-аутентификационный троттлинг** | Лимит попыток на префикс **до** проверки Argon2 | `openapi.tokens.auth.failed-attempt-limit` / `failed-attempt-window-seconds` | [Rate limiting](rate-limiting.md#пре-аутентификационное-ограничение) |
+| 17 | **`Retry-After` в 429** | Заголовок и JSON-body (`application/problem+json`) при превышении лимита | `openapi.tokens.rate-limit.retry-after-seconds` | [Rate limiting](rate-limiting.md#поведение-при-превышении) |
+| 18 | **Аутентификация по Bearer** | Заголовок `Authorization: Bearer atk_…`; 401 — `problem+json` + `WWW-Authenticate` | `openapi.tokens.token.header` / `bearer-prefix` | [Аутентификация](security.md) |
+| 19 | **Режим `internal`** | Владелец токена = текущий `Authentication` / `UserDetails`; анонимный запрос отвергается | `openapi.tokens.auth.mode=internal` | [Аутентификация](security.md) |
+| 20 | **Режим `keycloak`** | Владелец = JWT `sub`, тенант = настраиваемый claim | `openapi.tokens.auth.mode=keycloak` | [Аутентификация](security.md) |
+| 21 | **Авторизация прав** | Скоупы становятся authority → `@PreAuthorize("hasAuthority('…')")` | Spring Security в приложении | [Аутентификация](security.md) |
+| 22 | **Fail-closed на пустых authority** | Токен, не дающий ни одного права, не аутентифицируется | `openapi.tokens.auth.reject-empty-authorities` | [Аутентификация](security.md) |
+| 23 | **Готовый SecurityFilterChain** | Защита `/api/openapi/**`, админка требует `ROLE_ADMIN`; фильтр токенов не регистрируется глобально | бин `openapiTokensSecurityFilterChain` | [Аутентификация](security.md#готовый-securityfilterchain) |
+| 24 | **Эффективный статус** | `effectiveStatus` = `EXPIRED` для просроченного `ACTIVE`-токена, без фонового задания | поле `effectiveStatus` в ответах API | [Жизненный цикл](token-lifecycle.md) |
+| 25 | **Оптимистическая блокировка** | Параллельная правка токена → 409 `Concurrent Modification` | колонка `version` (миграция V3) | [Жизненный цикл](token-lifecycle.md#конкурентный-доступ-и-оптимистическая-блокировка) |
+| 26 | **Аудит** | События `AUTHENTICATE`, `CREATE_TOKEN`, `REVOKE_TOKEN`, `BLOCK_TOKEN`, `UNBLOCK_TOKEN`; реальный HTTP-статус; настраиваемые enabled/async/record-failures | `openapi.tokens.audit.*` | [Аудит](audit.md) |
+| 27 | **Статистика использования** | Всего / успешных / неуспешных записей, последнее использование | `GET /api/openapi/tokens/{id}/stats` | [Аудит](audit.md) |
+| 28 | **Журнал аудита по токену** | `offset`/`limit` (по умолчанию 50 у пользователя, 100 у админа; максимум 500) | `GET .../{id}/audit` | [Аудит](audit.md#чтение-аудита) |
+| 29 | **Админский API** | Список всех токенов, карточка любого токена, принудительный отзыв | `GET/DELETE /api/openapi/admin/tokens` | [REST API](../api/rest-api.md) |
+| 30 | **Java API** | `ApiTokenService`, `ScopeCatalog`, `ApiTokenPermissionChecker` | бины Spring | [Java API](../api/java-api.md) |
+| 31 | **Точки расширения (SPI)** | Замена любого компонента своим бином | `@ConditionalOnMissingBean` | [Порты и SPI](../api/spi.md) |
+| 32 | **Отключение целиком** | Ни один бин статера не регистрируется | `openapi.tokens.enabled=false` | [Конфигурация](../configuration.md) |
+| 33 | **Демо-приложение** | REST + server-rendered UI пользователя и администратора | модули `sample`, `sample-ui` | [Web UI](../guides/web-ui.md) |
+| 34 | **Миграции Flyway** | Схема БД поставляется вместе с библиотекой | `db/migration/V1…V3` | [Модель данных](../architecture/data-model.md) |
 
 ---
 
@@ -44,21 +51,28 @@
 Полный жизненный цикл «машинных» учётных данных:
 
 - создание токена с именем, описанием, скоупами, TTL, rate limit и тенантом;
-- просмотр списка своих токенов и карточки отдельного токена;
-- отзыв токена владельцем (необратимо);
+- fail-closed проверки при создании: чужой тенант (403), недопустимые скоупы (422);
+- просмотр списка своих токенов и карточки отдельного токена (со `status` и `effectiveStatus`);
+- отзыв токена владельцем (необратимо, `DELETE` идемпотентен);
 - административное управление: просмотр всех токенов, блокировка, разблокировка,
   принудительный отзыв;
-- квота на количество токенов у одного владельца.
+- квота на количество **используемых** токенов у одного владельца (отзыв освобождает слот);
+- оптимистическая блокировка: параллельная правка → 409.
 
 Подробно: [Жизненный цикл токена](token-lifecycle.md).
 
 ### 2. Безопасность
 
-- Одноразовый показ секрета: в базе хранится только хеш, восстановить токен нельзя.
-- Поиск токена по публичному префиксу + проверка хеша секрета.
+- Одноразовый показ секрета: в базе хранится только хеш, восстановить токен нельзя;
+  ответ создания помечен `Cache-Control: no-store`.
+- Поиск токена по публичному префиксу + проверка хеша секрета; хеши тегированы алгоритмом.
 - Проверка статуса и TTL на каждом запросе.
+- Пре-аутентификационный троттлинг попыток по префиксу — до вычисления Argon2.
+- Fail-closed: токен без authority не аутентифицируется; анонимный запрос не может стать
+  владельцем токена.
 - Готовый фильтр Spring Security и `AuthenticationProvider`, отдельный
-  `SecurityFilterChain` для `/api/openapi/**`.
+  `SecurityFilterChain` для `/api/openapi/**`; фильтр не регистрируется глобально.
+- Ошибки в формате `application/problem+json`: 401 + `WWW-Authenticate`, 429 + `Retry-After`.
 - Два режима определения владельца: `internal` (обычная аутентификация приложения)
   и `keycloak` (JWT/OIDC).
 - Преобразование скоупов токена в authority Spring Security → привычный
@@ -72,22 +86,35 @@
 - Режим `mapped` — скоуп токена разворачивается в одно или несколько прав (1:M);
   маппинги берутся из конфигурации и/или из таблицы `scope_mapping` (запись в БД приоритетнее).
 - Справочник скоупов с описаниями — для UI создания токена, документации и админ-консоли;
-  описания можно задать конфигом или хранить в таблице `scope_catalog`.
+  описания можно задать конфигом или хранить в таблице `scope_catalog`;
+  project-права резолвятся одним батчевым запросом.
+- Валидация запрошенных скоупов при создании (SPI `ScopeValidator`): режимы
+  `off` / `deny-list` / `catalog` (по умолчанию) / `strict`; отказ — 422 с `reason`
+  и `invalidScopes`.
+- Тенант из запроса по умолчанию не может выходить за пределы тенанта владельца
+  (`allow-tenant-override`).
 
 Подробно: [Скоупы и права](scopes.md).
 
 ### 4. Ограничение частоты запросов
 
 Пер-токенная политика «N запросов за окно W секунд» на Bucket4j: при превышении
-аутентификация отклоняется с HTTP 429, событие попадает в аудит.
+аутентификация отклоняется с HTTP 429 (`Retry-After` + problem+json), событие попадает
+в аудит. Ведро ключуется по `tokenId`, карта ведёр ограничена (10 000, LRU). Отдельно
+работает пре-аутентификационный лимит попыток на префикс.
 
 Подробно: [Rate limiting](rate-limiting.md).
 
 ### 5. Аудит и наблюдаемость
 
-- Асинхронная запись событий аутентификации (не тормозит обработку запроса и не ломает её при сбое).
-- Журнал по токену: метод, эндпоинт, действие, результат, HTTP-статус, IP, User-Agent, время.
-- Агрегированная статистика: всего запросов, успешных, неуспешных, время последнего использования.
+- Асинхронная запись событий (не тормозит обработку запроса и не ломает её при сбое);
+  `enabled`/`async`/`record-failures` реально работают, очередь executor'а ограничена.
+- Журнал по токену: метод, эндпоинт, действие, результат, **фактический** HTTP-статус,
+  IP, User-Agent, время.
+- События жизненного цикла: `CREATE_TOKEN`, `REVOKE_TOKEN`, `BLOCK_TOKEN`, `UNBLOCK_TOKEN`.
+- Агрегированная статистика: всего записей, успешных, неуспешных, время последнего события.
+- Пагинация аудита — честные `offset`/`limit` (максимум 500), длинные текстовые поля
+  обрезаются по ширине колонки, а не теряют событие.
 
 Подробно: [Аудит и статистика](audit.md).
 
@@ -95,7 +122,8 @@
 
 - Spring Boot Starter: одна зависимость, авто-конфигурация, `@ConfigurationProperties`.
 - Все ключевые компоненты объявлены через `@ConditionalOnMissingBean` — продукт может
-  подменить хешер, хранилище, rate limiter, резолвер прав, каталог скоупов, аудит.
+  подменить хешер, хранилище, rate limiter, резолвер прав, каталог скоупов, валидатор
+  скоупов, аудит.
 - Персистентность вынесена за порт `ApiTokenRepository`: JPA-реализация в комплекте,
   свой адаптер (JDBC, MongoDB, внешний сервис) — замена одного бина.
 - `openapi.tokens.enabled=false` полностью выключает функциональность.
@@ -113,8 +141,9 @@
 | Аутентификация пользователей | Логин/пароль, SSO, Keycloak-настройка — на стороне приложения. Статер только *читает* готовый security context. |
 | Управление пользователями и ролями | Список владельцев токенов не ведётся: `owner_id` — просто строка, полученная из security context. |
 | Хранение «профилей» владельцев | Нет таблицы пользователей, нет FK на неё. |
-| Автоматическое истечение по расписанию | Фонового планировщика нет: TTL проверяется в момент аутентификации. Подробнее — [Ограничения](../operations/roadmap.md). |
-| Распределённый rate limiting | Реализация in-memory: в кластере лимит считается по каждому узлу отдельно. |
+| Автоматическое истечение по расписанию | Фонового планировщика нет: TTL проверяется в момент аутентификации, а `effectiveStatus` выводит `EXPIRED` на чтении, не переписывая строку. Подробнее — [Ограничения](../operations/roadmap.md). |
+| Распределённый rate limiting | Реализация in-memory: в кластере лимит считается по каждому узлу отдельно (карта ведёр ограничена 10 000, LRU). |
+| Валидация «кто чем владеет» по БД ролей | Библиотека не знает ролей продукта: в `strict`-режиме она сравнивает authority из текущего security context, а источник этих authority — на стороне приложения. |
 | Bitnami/openapi экспорт | Библиотека не генерирует OpenAPI-схему автоматически; контракты описаны в [REST API](../api/rest-api.md). |
 | Публикация артефактов в Maven Central | `maven-publish` не настроен. |
 | UI для продукта | Есть референсный server-rendered UI в демо-модулях; продукт может использовать REST API или собственный фронтенд. |

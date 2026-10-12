@@ -4,8 +4,9 @@ plugins {
 
 dependencies {
     api(project(":openapi-tokens-core"))
+    // OpenApiTokensPersistenceJpaConfig exposes Spring Data annotations, so consumers need them too.
+    api("org.springframework.boot:spring-boot-starter-data-jpa")
 
-    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.flywaydb:flyway-core")
     implementation("org.flywaydb:flyway-database-postgresql")
 
@@ -15,7 +16,6 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:postgresql")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
 }
 
 tasks.withType<Test>().configureEach {

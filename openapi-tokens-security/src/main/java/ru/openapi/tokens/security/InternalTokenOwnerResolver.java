@@ -1,5 +1,6 @@
 package ru.openapi.tokens.security;
 
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -15,7 +16,8 @@ public final class InternalTokenOwnerResolver implements TokenOwnerResolver {
     @Override
     public TokenOwner resolveCurrentOwner() {
         final Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
             throw new IllegalStateException("No authenticated principal for token owner resolution");
         }
         if (authentication instanceof ApiTokenAuthentication apiAuth && apiAuth.getApiToken() != null) {

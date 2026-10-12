@@ -14,7 +14,9 @@
 | Домен и сервис жизненного цикла | `ApiTokenService` (транзакционный декоратор над `DefaultApiTokenService`) |
 | Хранение | JPA-адаптеры + Flyway-миграции |
 | Аутентификация по токену | `ApiTokenAuthenticationFilter`, `ApiTokenAuthenticationProvider`, `ApiTokenAuthentication` |
-| Авторизация | authority из скоупов, `ApiTokenPermissionChecker` |
+| Авторизация | authority из скоупов, `ApiTokenPermissionChecker`, бин `PermissionEvaluator` |
+| Валидация скоупов | `ScopeValidator` (+ `CallerAuthorityResolver`) до проверки квоты |
+| Аудит | `AuditRecorder` (`Async`/`Sync`/`NoOp` по `audit.*`) |
 | REST | `UserApiTokenController`, `AdminApiTokenController`, `ScopeCatalogController`, `ApiTokenExceptionHandler` |
 | Защита своих эндпоинтов | `SecurityFilterChain` для `/api/openapi/**` |
 | Конфигурация | `OpenApiTokensProperties` (`openapi.tokens.*`), `AutoConfiguration.imports` |
@@ -57,9 +59,28 @@ openapi:
     enabled: true
     auth:
       mode: internal
+      reject-empty-authorities: true      # токен без authority не аутентифицируется
+      failed-attempt-limit: 60            # пред-аутентификационная защита от перебора (0 — выкл.)
+      failed-attempt-window-seconds: 60
     scopes:
       mode: identity
+      allow-tenant-override: false        # чужой tenantId в запросе → 403
+      validation:
+        mode: catalog                     # off | deny-list | catalog | strict
+        deny-patterns: ["ROLE_.*"]
+        privileged-authorities: ["ROLE_ADMIN"]
+      catalog:                            # обязательный минимум при mode != off
+        "[payments:read]": "Чтение платежей"
+    audit:
+      enabled: true
+      async: true
+      record-failures: true
 ```
+
+!!! danger "Скоупы нужно объявить"
+    При `scopes.validation.mode != off` (по умолчанию `catalog`) каждый запрошенный скоуп должен
+    быть известен: `scopes.catalog`, таблица `scope_catalog` или `scopes.mappings`. Иначе
+    создание токена вернёт **422**. См. [Режимы валидации скоупов](../configuration.md#режимы-валидации-скоупов).
 
 Полный список свойств — [Конфигурация](../configuration.md).
 
@@ -156,69 +177,79 @@ class RefundService {
 }
 ```
 
-### 3.5 Обязательное усиление: ограничение скоупов
+### 3.5 Валидация скоупов (встроена)
 
-!!! danger "Не выводите эндпоинт создания токена «как есть» во внешний контур"
-    `POST /api/openapi/tokens` принимает любые непустые скоупы. В режиме `identity`
-    пользователь может выпустить токен со скоупом `ROLE_ADMIN` и получить административный
-    доступ. Варианты защиты:
+!!! info "Скоупы проверяются библиотекой"
+    `POST /api/openapi/tokens` больше не принимает произвольные строки: перед проверкой квоты
+    и генерацией секрета срабатывает `ScopeValidator`. Отказ ничего не сохраняет и возвращает
+    **422** с `reason` (`UNKNOWN_SCOPE` | `DENIED_SCOPE` | `NOT_GRANTABLE`) и `invalidScopes`.
 
-    === "Валидация скоупов"
+Выберите режим под модель угроз:
 
-        ```java
-        @RestController
-        @RequestMapping("/api/tokens")
-        class SafeTokenController {
+=== "`catalog` (по умолчанию)"
 
-            private final ApiTokenService service;
-            private final ScopeCatalog catalog;
+    ```yaml
+    openapi:
+      tokens:
+        scopes:
+          validation:
+            mode: catalog
+          catalog:
+            "[payments:read]": "Чтение платежей"
+    ```
 
-            @PostMapping
-            public CreatedTokenResponse create(@Valid @RequestBody CreateTokenRequest request,
-                                               Authentication authentication) {
-                Set<String> allowed = catalog.listScopes().stream()
-                        .map(ScopeInfo::scope)
-                        .collect(Collectors.toSet());
+    Разрешены только объявленные скоупы; `ROLE_.*` запрещены по умолчанию. Базовый уровень
+    для публичного API.
 
-                List<String> unknown = request.scopes().stream()
-                        .filter(scope -> !allowed.contains(scope))
-                        .toList();
-                if (!unknown.isEmpty()) {
-                    throw new IllegalArgumentException("Неизвестные скоупы: " + unknown);
-                }
+=== "`strict` — запрет делегирования"
 
-                Set<String> userAuthorities = authentication.getAuthorities().stream()
-                        .map(GrantedAuthority::getAuthority)
-                        .collect(Collectors.toSet());
-                if (!userAuthorities.containsAll(request.scopes())) {
-                    throw new AccessDeniedException("Нельзя выдать права, которых у вас нет");
-                }
+    ```yaml
+    openapi:
+      tokens:
+        scopes:
+          validation:
+            mode: strict
+            deny-patterns: ["ROLE_.*"]
+            privileged-authorities: ["ROLE_ADMIN"]
+    ```
 
-                return mapper.toCreatedResponse(service.create(mapper.toCommand(request)));
-            }
-        }
-        ```
+    Дополнительно к `catalog`: вызывающий обязан сам обладать каждой authority, которую
+    получит новый токен (со сквозной проекцией скоупов). Админам разрешено всё.
 
-    === "Режим mapped"
+=== "`deny-list` — только чёрный список"
 
-        ```yaml
-        openapi:
-          tokens:
-            scopes:
-              mode: mapped
-              mappings:
-                payments:
-                  - payments:read
-                  - payments:write
-        ```
+    ```yaml
+    openapi:
+      tokens:
+        scopes:
+          validation:
+            mode: deny-list
+            deny-patterns: ["ROLE_.*", "ADMIN_.*"]
+    ```
 
-        Тогда authority появляются только из объявленных маппингов, и произвольная строка
-        в скоупе не даёт прав.
+    Никакого справочника: подходит, если набор скоупов контролируется иначе.
 
-    === "Отдельный контур"
+=== "Свой `ScopeValidator`"
 
-        Не подключайте `openapi-tokens-web` к публичному API: используйте только
-        `ApiTokenService` в своих контроллерах с собственной авторизацией.
+    ```java
+    @Bean
+    ScopeValidator scopeValidator(MyPolicyService policy) {
+        return context -> policy.check(context.requestedScopes(), context.tenantId());
+    }
+    ```
+
+    Полностью заменяет сборку по `scopes.validation.mode`; реализация обязана падать закрыто
+    (`InvalidScopeException`), а не «расширять» права.
+
+=== "Отдельный контур"
+
+    Если нужно отдать минимальный API, не подключайте `openapi-tokens-web`: используйте
+    `ApiTokenService` в своих контроллерах с собственной авторизацией.
+
+!!! warning "Режим `off` — только для обратной совместимости"
+    `scopes.validation.mode: off` (`ScopeValidator.allowAll()`) возвращает прежнее поведение:
+    любая непустая строка становится authority. В `identity` это снова открывает путь к
+    `ROLE_ADMIN` — не используйте `off` во внешнем контуре.
 
 ### 3.6 Режим `keycloak` (OIDC и resource server)
 
@@ -293,7 +324,8 @@ class TokenCustomizations {
         return () -> new TokenOwner(context.userId(), context.tenantId());
     }
 
-    /** BCrypt вместо Argon2id по умолчанию (или свои параметры). */
+    /** BCrypt вместо Argon2id: проще свойством openapi.tokens.hashing.algorithm=bcrypt
+        (авто-конфигурация использует тегированные хеши и не ломает старые токены). */
     @Bean
     TokenHasher tokenHasher() {
         return new BcryptTokenHasher();
@@ -333,7 +365,7 @@ class TokenCustomizations {
 ApiTokenService (бин)
    └── TransactionalApiTokenService   @Transactional(readOnly = true) на классе
           ├── create / revoke / block / forceRevoke / forceBlock / touchLastUsed → @Transactional
-          └── get / listOwn / usageStats / listAll / getAny → readOnly
+          └── get / listOwn / usageStats / listAll / listAll(offset, limit) / countAll / getAny → readOnly
    └── DefaultApiTokenService (ядро, без Spring)
 ```
 
@@ -343,6 +375,8 @@ ApiTokenService (бин)
   транзакции на нём не будет.
 - Чтение списков возвращает доменные объекты, полностью материализованные внутри транзакции
   (ленивые скоупы инициализируются в адаптере).
+- `create` внутри транзакции берёт advisory lock на владельца (`lockOwnerQuota`) и проверяет
+  квоту по `ACTIVE` + `BLOCKED` — параллельные создания не могут превысить лимит.
 - `spring.jpa.open-in-view=false` — правильная настройка; не включайте обратно, полагаясь на
   ленивую загрузку в представлении.
 
@@ -374,12 +408,16 @@ package-private — работать с ними напрямую нельзя �
 
 | Особенность | Последствие |
 |---|---|
-| `findAll()` инициализирует скоупы построчно | N+1 при большом числе токенов (админский список) |
+| Админский список идёт через `findPage(offset, limit)`: сначала SELECT id, затем один `findAllById` со скоупами | Без N+1; сортировка `createdAt DESC, id DESC` |
+| `findAll()` (без пагинации) по-прежнему инициализирует скоупы построчно | N+1, если использовать его напрямую на большом объёме |
 | `findById` делает дополнительный SELECT скоупов | +1 запрос на обращение |
 | `findByPrefix`/`findByOwnerId` используют `@EntityGraph` | Один запрос с join (но не годится для пагинации по коллекции) |
-| `findByTokenId(tokenId, offset, limit)` считает `page = offset / limit` | Некратный offset игнорируется; `limit <= 0` → `page=0, size=20` |
+| `findByTokenId(tokenId, offset, limit)` использует честные `offset`/`limit`; `limit <= 0` → 20, больше 500 → 500 | Некратный offset больше не игнорируется |
+| Создание токена берёт `pg_advisory_xact_lock(hashtext(ownerId))` | Транзакционная сериализация квоты; снимается с концом транзакции (PostgreSQL) |
+| `lockOwnerQuota` по умолчанию — no-op | В не-PostgreSQL адаптере квоту может обогнать гонка: переопределите метод или добавьте свой lock |
+| `touchLastUsed` — точечный `UPDATE ... WHERE status = 'ACTIVE'` | Не перетирает конкурентный отзыв; `@Modifying(clearAutomatically = true)` |
 | Уникальность `scope_mapping` не защищает от NULL-дублей | Повторный `save` создаёт новую строку |
-| Нет `@Version` | Конкурентные изменения — «последний победил» |
+| Есть `@Version` у `api_token` | Конкурентные изменения → 409 `Concurrent Modification` (см. `TokenConcurrencyExceptionHandler`) |
 | Нет FK у `api_token_audit_log.token_id` | Аудит переживает удаление токена, возможны «сироты» |
 
 Подробно — [Модель данных](../architecture/data-model.md).
@@ -393,8 +431,14 @@ ApiTokenRepository apiTokenRepository(MongoTemplate mongo) {
 }
 ```
 
-Порт `ApiTokenRepository`: `save`, `findById`, `findByPrefix`, `findByOwnerId`, `findAll`,
-`countByOwnerId`, `deleteById`. Порт должен возвращать доменные `ApiToken` с заполненными
+Обязательные методы `ApiTokenRepository`: `save`, `findById`, `findByPrefix`, `findByOwnerId`,
+`findAll`, `countByOwnerId`, `deleteById`. Методы `findPage(offset, limit)`, `count()`,
+`countUsableByOwnerId(ownerId)`, `lockOwnerQuota(ownerId)` и `touchLastUsed(id, lastUsedAt)`
+имеют реализации по умолчанию — свой адаптер компилируется без изменений, но для конкурентной
+квоты и точечного UPDATE их стоит переопределить (см.
+[Порты и SPI](../api/spi.md#изменения-в-портах-после-усиления-безопасности)).
+
+Порт должен возвращать доменные `ApiToken` с заполненными
 скоупами и `TokenExpiry` (включая `createdAt` — он нужен для расчёта скользящего TTL).
 
 ---
@@ -403,17 +447,17 @@ ApiTokenRepository apiTokenRepository(MongoTemplate mongo) {
 
 | # | Особенность | Что делать |
 |---|---|---|
-| 1 | Свойства `audit.enabled/async/record-failures`, `rate-limit.backend`, `token.default-ttl` **не читаются** | Не полагайтесь на них; отключение аудита — своим бином `AuditRecorder` |
+| 1 | Единственное неиспользуемое свойство — `rate-limit.backend` | Распределённый лимитер — своим бином `RateLimiter`; `audit.*` и `token.default-ttl` работают |
 | 2 | `ApiTokenService#listAll/getAny/forceRevoke/forceBlock` не проверяют права | Защищайте свои эндпоинты `@PreAuthorize` |
-| 3 | Скоупы из запроса не валидируются | Обязательное усиление — см. раздел 3.5 |
-| 4 | `tenantId` берётся из запроса без сверки с владельцем | Убирайте поле или перезаписывайте из контекста |
-| 5 | `ApiTokenPermissionEvaluator` зарегистрирован как `ApiTokenPermissionChecker` | Для `hasPermission(...)` в SpEL нужен свой бин `PermissionEvaluator` + `MethodSecurityExpressionHandler` |
-| 6 | Просроченные токены остаются `ACTIVE` в БД | Не опирайтесь на статус — проверяйте `expiresAt`/`lastUsedAt` |
-| 7 | `DELETE` не идемпотентен (повтор → 400) | Учтите в ретраях |
-| 8 | Ошибки 401/429 от фильтра — не JSON | Настройте свой `AuthenticationEntryPoint`, если нужен единый формат |
-| 9 | `touchLastUsed` — UPDATE при каждом успешном запросе | При высокой нагрузке рассмотрите кеш/отложенную запись |
+| 3 | Скоупы валидируются по `scopes.validation.mode` (по умолчанию `catalog`) | Объявите скоупы в `scopes.catalog`/`scope_catalog`/`scopes.mappings`; для запрета делегирования — `strict` (раздел 3.5) |
+| 4 | `tenantId` из запроса при `allow-tenant-override=false` сверяется с владельцем | Чужой тенант → 403; включайте override только осознанно |
+| 5 | `ApiTokenPermissionEvaluator` зарегистрирован и как `ApiTokenPermissionChecker`, и как `PermissionEvaluator` | `hasPermission(...)` работает при включённом `@EnableMethodSecurity` |
+| 6 | Просроченные токены остаются `ACTIVE` в БД | Используйте `effectiveStatus` (вычисляет `EXPIRED`) или проверяйте `expiresAt` |
+| 7 | `DELETE /api/openapi/tokens/{id}` идемпотентен (повтор → 204) | Ретраи безопасны |
+| 8 | Ошибки 401/429 от фильтра — уже `application/problem+json` | `WWW-Authenticate: Bearer` на 401 и `Retry-After` на 429 |
+| 9 | `touchLastUsed` — точечный UPDATE при каждом успешном запросе | При высокой нагрузке рассмотрите кеш/отложенную запись |
 | 10 | Argon2id проверяется на каждом запросе (64 МиБ, 3 итерации) | Оцените стоимость; при необходимости снизьте параметры своим `TokenHasher` |
-| 11 | Ведра rate limiter никогда не удаляются | Свой `RateLimiter` с TTL/кешем |
+| 11 | Ведра rate limiter никогда не удаляются | Свой `RateLimiter` с TTL/кешем (есть `reset(key)`) |
 | 12 | В кластере лимит умножается на число узлов | Внешний лимитер |
 | 13 | Аудит растёт неограниченно | Регламент очистки/партиционирование |
 | 14 | `endpoint`/`user_agent` ограничены 512 символами | Ошибка вставки логируется; при длинных URL маскируйте значения своим `AuditRecorder` |
@@ -426,9 +470,9 @@ ApiTokenRepository apiTokenRepository(MongoTemplate mongo) {
 |---|---|
 | Ошибки записи аудита | лог `ERROR` `Failed to append audit event for token {}` (логгер `AsyncAuditRecorder`) |
 | Логи библиотеки | задайте `logging.level.ru.openapi.tokens=DEBUG` для подробностей |
-| Отказ аутентификации | HTTP 401 без деталей; смотрите аудит-журнал по токену |
-| Превышение лимита | HTTP 429 + запись в аудите с `responseStatus=429` |
-| Некорректный запрос | `ProblemDetail` в ответе; для валидации — поле `detail` |
+| Отказ аутентификации | HTTP 401 (`detail: Unauthorized`, заголовок `WWW-Authenticate: Bearer`); причина — в аудит-журнале по токену |
+| Превышение лимита | HTTP 429 + `Retry-After` + запись в аудите с `responseStatus=429` |
+| Некорректный запрос | `ProblemDetail` в ответе: `errors` (map «поле → сообщение») для 400, `reason`/`invalidScopes` для 422 |
 
 Полезно добавить своим кодом (библиотека их не отдаёт):
 
@@ -510,15 +554,16 @@ ArchUnit 1.3.0. Отдельной задачи `integrationTest` нет — в�
 - [ ] `spring.jpa.hibernate.ddl-auto=validate`, `spring.flyway.enabled=true`.
 - [ ] Версии миграций библиотеки не конфликтуют с миграциями продукта.
 - [ ] Настроена аутентификация пользователей и `@EnableMethodSecurity`.
-- [ ] **Ограничен набор скоупов** при создании токена (или используется режим `mapped`).
-- [ ] `tenantId` не принимается «как есть» от клиента (или принимается осознанно).
+- [ ] Все выпускаемые скоупы объявлены, а `scopes.validation.mode` выбран осознанно (по умолчанию `catalog`; `strict` — для запрета делегирования).
+- [ ] `scopes.allow-tenant-override` оставлен `false`, если клиенты не должны выбирать тенант.
 - [ ] Административные эндпоинты защищены (роль/authority), а не только URL-паттерном.
 - [ ] Настроен CORS, если UI на другом origin.
 - [ ] Есть регламент очистки `api_token_audit_log`.
-- [ ] Оценена стоимость хеширования на горячем пути (Argon2id).
+- [ ] Оценена стоимость хеширования на горячем пути (Argon2id); смена `hashing.algorithm` безопасна (хеши тегированы).
 - [ ] Решён вопрос с распределённым rate limit (если приложение в кластере).
+- [ ] Проверены `auth.failed-attempt-limit`/`failed-attempt-window-seconds` (защита от перебора до хеша).
 - [ ] Есть мониторинг ошибок записи аудита и размера журнала.
-- [ ] Не используются «мёртвые» свойства (`audit.*`, `rate-limit.backend`, `token.default-ttl`).
+- [ ] Не используется «мёртвое» свойство `rate-limit.backend` (распределённый лимитер — своим бином).
 
 ---
 

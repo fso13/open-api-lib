@@ -73,7 +73,6 @@ class DefaultApiTokenAuthenticatorTest {
         when(rateLimiter.tryAcquire(eq(token.id()), any())).thenReturn(true);
         when(scopeResolver.resolve(Set.of("read"), null)).thenReturn(Set.of("read"));
         when(apiTokenService.touchLastUsed(token.id())).thenReturn(token);
-        when(repository.findById(token.id())).thenReturn(Optional.of(token));
 
         final var result = authenticator.authenticate(raw);
 
@@ -89,7 +88,7 @@ class DefaultApiTokenAuthenticatorTest {
         when(tokenHasher.matches("supersecretvalue", "hash")).thenReturn(false);
 
         assertThat(authenticator.authenticate(raw)).isEmpty();
-        verify(rateLimiter, never()).tryAcquire(any(), any());
+        verify(rateLimiter, never()).tryAcquire(any(java.util.UUID.class), any());
     }
 
     @Test
@@ -122,5 +121,91 @@ class DefaultApiTokenAuthenticatorTest {
 
         assertThatThrownBy(() -> authenticator.authenticate(raw))
                 .isInstanceOf(RateLimitExceededException.class);
+    }
+
+    @Test
+    @DisplayName("Should reject before hashing when the failed attempt budget is exhausted")
+    void shouldRejectWhenAttemptBudgetExhausted() {
+        final var throttled = new DefaultApiTokenAuthenticator(
+                repository, tokenHasher, scopeResolver, rateLimiter, apiTokenService,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                ru.openapi.tokens.token.RateLimitPolicy.of(5, 60),
+                false
+        );
+        when(rateLimiter.isExhausted(eq("auth-fail:abcd1234"), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> throttled.authenticate(raw))
+                .isInstanceOf(RateLimitExceededException.class);
+        verify(tokenHasher, never()).matches(any(), any());
+        verify(repository, never()).findByPrefix(any());
+    }
+
+    @Test
+    @DisplayName("Should spend the failed attempt budget only on failed attempts")
+    void shouldSpendAttemptBudgetOnFailures() {
+        final var throttled = new DefaultApiTokenAuthenticator(
+                repository, tokenHasher, scopeResolver, rateLimiter, apiTokenService,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                ru.openapi.tokens.token.RateLimitPolicy.of(5, 60),
+                false
+        );
+        when(repository.findByPrefix("abcd1234")).thenReturn(Optional.empty());
+
+        assertThat(throttled.authenticate(raw)).isEmpty();
+
+        verify(rateLimiter).tryAcquire("auth-fail:abcd1234", ru.openapi.tokens.token.RateLimitPolicy.of(5, 60));
+    }
+
+    @Test
+    @DisplayName("Should not spend the failed attempt budget on a successful authentication")
+    void shouldNotSpendAttemptBudgetOnSuccess() {
+        final var throttled = new DefaultApiTokenAuthenticator(
+                repository, tokenHasher, scopeResolver, rateLimiter, apiTokenService,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                ru.openapi.tokens.token.RateLimitPolicy.of(1, 60),
+                false
+        );
+        when(repository.findByPrefix("abcd1234")).thenReturn(Optional.of(token));
+        when(tokenHasher.matches("supersecretvalue", "hash")).thenReturn(true);
+        when(rateLimiter.tryAcquire(eq(token.id()), any())).thenReturn(true);
+        when(scopeResolver.resolve(Set.of("read"), null)).thenReturn(Set.of("read"));
+        when(apiTokenService.touchLastUsed(token.id())).thenReturn(token);
+
+        assertThat(throttled.authenticate(raw)).isPresent();
+
+        // A busy legitimate token must not consume its own failure budget.
+        verify(rateLimiter, never()).tryAcquire(eq("auth-fail:abcd1234"), any());
+    }
+
+    @Test
+    @DisplayName("Should reject a token that resolves to no authorities when fail-closed is on")
+    void shouldRejectEmptyAuthoritiesWhenConfigured() {
+        final var strict = new DefaultApiTokenAuthenticator(
+                repository, tokenHasher, scopeResolver, rateLimiter, apiTokenService,
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                null,
+                true
+        );
+        when(repository.findByPrefix("abcd1234")).thenReturn(Optional.of(token));
+        when(tokenHasher.matches("supersecretvalue", "hash")).thenReturn(true);
+        when(rateLimiter.tryAcquire(eq(token.id()), any())).thenReturn(true);
+        when(scopeResolver.resolve(Set.of("read"), null)).thenReturn(Set.of());
+
+        assertThat(strict.authenticate(raw)).isEmpty();
+        verify(apiTokenService, never()).touchLastUsed(any());
+    }
+
+    @Test
+    @DisplayName("Should fail closed when the token is revoked while authenticating")
+    void shouldFailClosedOnConcurrentRevoke() {
+        when(repository.findByPrefix("abcd1234")).thenReturn(Optional.of(token));
+        when(tokenHasher.matches("supersecretvalue", "hash")).thenReturn(true);
+        when(rateLimiter.tryAcquire(eq(token.id()), any())).thenReturn(true);
+        when(scopeResolver.resolve(Set.of("read"), null)).thenReturn(Set.of("read"));
+        when(apiTokenService.touchLastUsed(token.id()))
+                .thenThrow(new ru.openapi.tokens.token.exception.InvalidTokenStateException(
+                        "revoked", TokenStatus.REVOKED));
+
+        assertThat(authenticator.authenticate(raw)).isEmpty();
     }
 }

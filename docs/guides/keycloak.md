@@ -241,8 +241,14 @@ openapi:
 - [ ] Настроить RP-initiated logout (`OidcClientInitiatedLogoutSuccessHandler`), иначе выход
       из приложения не закрывает SSO-сессию Keycloak.
 - [ ] Вынести `client-secret` из репозитория в защищённое хранилище.
-- [ ] Помнить про ограничение: `tenantId` при создании токена принимается из запроса
-      без сверки с тенантом владельца (см. [Ограничения](../operations/roadmap.md)).
+- [ ] Проверить политику тенантов: по умолчанию (`scopes.allow-tenant-override=false`) `tenantId`
+      из запроса, отличный от тенанта владельца из JWT, отклоняется с **403**; включайте
+      override только осознанно.
+- [ ] Скоупы валидируются (`scopes.validation.mode`, по умолчанию `catalog`): объявите их в
+      `scopes.catalog`/`scope_catalog`/`scopes.mappings`, иначе создание токена вернёт **422**.
+      Для «мощных» скоупов используйте `mode: strict` — но помните, что Keycloak-роли приходят
+      как `ROLE_*`, а `scope` claim — как `SCOPE_*`, поэтому для `strict` нужен свой
+      `CallerAuthorityResolver`, приводящий authority к пространству имён скоупов токена.
 
 ---
 

@@ -14,6 +14,14 @@ public class RateLimitExceededException extends RuntimeException {
         this.tokenId = tokenId;
     }
 
+    /**
+     * Pre-authentication limit (too many failed attempts); the token is not known yet.
+     */
+    public RateLimitExceededException() {
+        super("Rate limit exceeded for authentication attempts");
+        this.tokenId = null;
+    }
+
     public UUID getTokenId() {
         return tokenId;
     }

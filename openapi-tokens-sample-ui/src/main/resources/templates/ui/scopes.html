@@ -10,8 +10,8 @@
             <h1>Справочник скоупов</h1>
             <p class="muted">
                 Все известные скоупы с описанием и правами, которые они выдают. Источник данных —
-                <code>GET /api/openapi/scopes</code> (конфиг <code>openapi.tokens.scopes.catalog</code>
-                + таблица <code>scope_catalog</code>).
+                бин <code>ScopeCatalog</code> (тот же, что отдаёт <code>GET /api/openapi/scopes</code>):
+                конфиг <code>openapi.tokens.scopes.catalog</code> + таблица <code>scope_catalog</code>.
             </p>
         </div>
         <span class="badge badge-muted" th:text="'режим: ' + ${scopesMode}">режим: identity</span>

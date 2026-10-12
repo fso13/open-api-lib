@@ -8,7 +8,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import ru.openapi.tokens.token.ApiToken;
+import ru.openapi.tokens.token.AuditEvent;
 import ru.openapi.tokens.token.CreatedApiToken;
+import ru.openapi.tokens.token.ScopeValidationContext;
 import ru.openapi.tokens.token.TokenCredentials;
 import ru.openapi.tokens.token.TokenOwner;
 import ru.openapi.tokens.token.TokenStatus;
@@ -16,14 +18,21 @@ import ru.openapi.tokens.token.command.BlockTokenCommand;
 import ru.openapi.tokens.token.command.CreateTokenCommand;
 import ru.openapi.tokens.token.command.RevokeTokenCommand;
 import ru.openapi.tokens.token.exception.ApiTokenNotFoundException;
+import ru.openapi.tokens.token.exception.InvalidScopeException;
 import ru.openapi.tokens.token.exception.QuotaExceededException;
+import ru.openapi.tokens.token.exception.TenantNotAllowedException;
 import ru.openapi.tokens.token.spi.ApiTokenRepository;
+import ru.openapi.tokens.token.spi.AuditRecorder;
+import ru.openapi.tokens.token.spi.CallerAuthorityResolver;
+import ru.openapi.tokens.token.spi.ScopeValidator;
 import ru.openapi.tokens.token.spi.TokenHasher;
 import ru.openapi.tokens.token.spi.TokenOwnerResolver;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -32,6 +41,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -67,7 +77,7 @@ class DefaultApiTokenServiceTest {
     @DisplayName("Should create token returning raw once and store hash only")
     void shouldCreateToken() {
         when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of("owner-1"));
-        when(repository.countByOwnerId("owner-1")).thenReturn(0L);
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(0L);
         when(tokenHasher.hash(any())).thenReturn("hashed-secret");
         when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -88,7 +98,7 @@ class DefaultApiTokenServiceTest {
     @DisplayName("Should reject create when quota exceeded")
     void shouldRejectQuotaExceeded() {
         when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of("owner-1"));
-        when(repository.countByOwnerId("owner-1")).thenReturn(10L);
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(10L);
 
         assertThatThrownBy(() -> service.create(CreateTokenCommand.of("ci", Set.of("read"))))
                 .isInstanceOf(QuotaExceededException.class);
@@ -143,11 +153,12 @@ class DefaultApiTokenServiceTest {
         final UUID id = UUID.randomUUID();
         final ApiToken existing = sampleToken(id, "owner-1");
         when(repository.findById(id)).thenReturn(Optional.of(existing));
-        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(repository.touchLastUsed(id, NOW)).thenReturn(true);
 
         final ApiToken touched = service.touchLastUsed(id);
 
         assertThat(touched.expiry().lastUsedAt()).isEqualTo(NOW);
+        verify(repository).touchLastUsed(id, NOW);
     }
 
     @Test
@@ -171,6 +182,130 @@ class DefaultApiTokenServiceTest {
         final ApiToken revoked = service.forceRevoke(new RevokeTokenCommand(id));
 
         assertThat(revoked.status()).isEqualTo(TokenStatus.REVOKED);
+    }
+
+    @Test
+    @DisplayName("Should not create a token when scope validation fails")
+    void shouldRejectInvalidScopes() {
+        final ScopeValidator validator = context -> {
+            throw new InvalidScopeException(InvalidScopeException.Reason.DENIED_SCOPE, Set.of("ROLE_ADMIN"));
+        };
+        final DefaultApiTokenService validating = newService(
+                ApiTokenServiceSettings.builder(8, 10).scopeValidator(validator).build()
+        );
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of("owner-1"));
+
+        assertThatThrownBy(() -> validating.create(CreateTokenCommand.of("ci", Set.of("ROLE_ADMIN"))))
+                .isInstanceOf(InvalidScopeException.class);
+
+        verify(repository, never()).save(any());
+        verify(repository, never()).countUsableByOwnerId(any());
+        verify(tokenHasher, never()).hash(any());
+    }
+
+    @Test
+    @DisplayName("Should pass caller authorities and tenant into the scope validator")
+    void shouldPassContextToScopeValidator() {
+        final List<ScopeValidationContext> seen = new ArrayList<>();
+        final DefaultApiTokenService validating = newService(ApiTokenServiceSettings.builder(8, 10)
+                .scopeValidator(seen::add)
+                .callerAuthorityResolver(new CallerAuthorityResolver() {
+                    @Override
+                    public Set<String> currentAuthorities() {
+                        return Set.of("payments:read");
+                    }
+
+                    @Override
+                    public boolean isPrivileged() {
+                        return true;
+                    }
+                })
+                .build());
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(new TokenOwner("owner-1", "tenant-a"));
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(0L);
+        when(tokenHasher.hash(any())).thenReturn("hash");
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        validating.create(new CreateTokenCommand(
+                "ci", null, Set.of("payments:read"), null, null, null, "tenant-a"
+        ));
+
+        assertThat(seen).hasSize(1);
+        assertThat(seen.getFirst().ownerId()).isEqualTo("owner-1");
+        assertThat(seen.getFirst().tenantId()).isEqualTo("tenant-a");
+        assertThat(seen.getFirst().requestedScopes()).containsExactly("payments:read");
+        assertThat(seen.getFirst().callerAuthorities()).containsExactly("payments:read");
+        assertThat(seen.getFirst().privileged()).isTrue();
+    }
+
+    @Test
+    @DisplayName("Should apply the configured default TTL when the client requests none")
+    void shouldApplyDefaultTtl() {
+        final DefaultApiTokenService withTtl = newService(
+                ApiTokenServiceSettings.builder(8, 10).defaultTtl(Duration.ofDays(90)).build()
+        );
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of("owner-1"));
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(0L);
+        when(tokenHasher.hash(any())).thenReturn("hash");
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        final CreatedApiToken created = withTtl.create(CreateTokenCommand.of("ci", Set.of("read")));
+
+        assertThat(created.token().expiry().expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(90)));
+    }
+
+    @Test
+    @DisplayName("Should reject a tenant that differs from the owner tenant")
+    void shouldRejectForeignTenant() {
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(new TokenOwner("owner-1", "tenant-a"));
+
+        assertThatThrownBy(() -> service.create(
+                new CreateTokenCommand("ci", null, Set.of("read"), null, null, null, "tenant-b")))
+                .isInstanceOf(TenantNotAllowedException.class);
+    }
+
+    @Test
+    @DisplayName("Should allow a tenant override when explicitly enabled")
+    void shouldAllowTenantOverrideWhenEnabled() {
+        final DefaultApiTokenService permissive = newService(
+                ApiTokenServiceSettings.builder(8, 10).allowTenantOverride(true).build()
+        );
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(new TokenOwner("owner-1", "tenant-a"));
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(0L);
+        when(tokenHasher.hash(any())).thenReturn("hash");
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        final CreatedApiToken created = permissive.create(
+                new CreateTokenCommand("ci", null, Set.of("read"), null, null, null, "tenant-b"));
+
+        assertThat(created.token().tenantId()).isEqualTo("tenant-b");
+    }
+
+    @Test
+    @DisplayName("Should record lifecycle audit events")
+    void shouldRecordLifecycleAudit() {
+        final AuditRecorder recorder = mock(AuditRecorder.class);
+        final DefaultApiTokenService audited = newService(
+                ApiTokenServiceSettings.builder(8, 10).auditRecorder(recorder).build()
+        );
+        when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of("owner-1"));
+        when(repository.countUsableByOwnerId("owner-1")).thenReturn(0L);
+        when(tokenHasher.hash(any())).thenReturn("hash");
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        audited.create(CreateTokenCommand.of("ci", Set.of("read")));
+
+        final ArgumentCaptor<AuditEvent> event = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(recorder).record(event.capture());
+        assertThat(event.getValue().action()).isEqualTo("CREATE_TOKEN");
+        assertThat(event.getValue().ownerId()).isEqualTo("owner-1");
+        assertThat(event.getValue().success()).isTrue();
+    }
+
+    private DefaultApiTokenService newService(ApiTokenServiceSettings settings) {
+        return new DefaultApiTokenService(
+                repository, tokenHasher, ownerResolver, null, Clock.fixed(NOW, ZoneOffset.UTC), settings
+        );
     }
 
     private static ApiToken sampleToken(UUID id, String ownerId) {

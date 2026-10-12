@@ -1,17 +1,22 @@
 # REST API
 
-Библиотека предоставляет три группы эндпоинтов. Все они **не имеют собственных
-`@PreAuthorize`** — доступ регулируется `SecurityFilterChain` (своим в приложении или
-готовым из статера).
+Библиотека предоставляет три группы эндпоинтов. Доступ регулируется `SecurityFilterChain`
+(своим в приложении или готовым из статера); дополнительно админский контроллер защищён
+`@PreAuthorize("hasRole('ADMIN')")` (defense in depth — аннотация работает, если приложение
+включает method security).
 
 | Группа | Базовый путь | Кто имеет доступ (цепочка статера) |
 |---|---|---|
 | Токены владельца | `/api/openapi/tokens` | любой аутентифицированный |
-| Администрирование | `/api/openapi/admin/tokens` | authority `ROLE_ADMIN` |
+| Администрирование | `/api/openapi/admin/tokens` | authority `ROLE_ADMIN` (+ `@PreAuthorize` при method security) |
 | Справочник скоупов | `/api/openapi/scopes` | любой аутентифицированный |
 
 Формат данных — JSON (`application/json`), кодировка UTF-8, время — ISO-8601 UTC
 (например `2026-10-07T11:00:00Z`), идентификаторы — UUID.
+
+Ошибки — RFC 7807 `application/problem+json` (обработчик `ApiTokenExceptionHandler`).
+Аутентификация на уровне фильтра отвечает в том же формате (см.
+[Ошибки аутентификации](#ошибки-аутентификации-на-уровне-фильтра)).
 
 ---
 
@@ -46,6 +51,7 @@
     HTTP/1.1 201 Created
     Location: /api/openapi/tokens/0f9a1b7c-1a2b-4c3d-8e4f-5a6b7c8d9e0f
     Content-Type: application/json
+    Cache-Control: no-store
 
     {
       "token": {
@@ -56,9 +62,14 @@
         "ownerId": "demo",
         "tenantId": "tenant-a",
         "status": "ACTIVE",
+        "effectiveStatus": "ACTIVE",
         "scopes": ["payments:read"],
         "expiresAt": "2027-01-01T00:00:00Z",
         "lastUsedAt": null,
+        "slidingTtlSeconds": 3600,
+        "rateLimitRequests": 100,
+        "rateLimitWindowSeconds": 60,
+        "createdBy": "demo",
         "createdAt": "2026-10-07T11:00:00Z",
         "revokedAt": null
       },
@@ -72,24 +83,33 @@
 |---|---|---|---|---|
 | `name` | `string` | ✔ | не пусто, ≤ 128 | Человекочитаемое имя |
 | `description` | `string` | ✗ | ≤ 512 | Описание |
-| `scopes` | `string[]` | ✔ | не пусто, элементы не пустые | Скоупы (см. [Скоупы](../features/scopes.md)) |
-| `expiresAt` | `string (ISO-8601)` | ✗ | — | Абсолютный срок действия |
-| `slidingTtlSeconds` | `integer` | ✗ | > 0 | Скользящее окно жизни |
-| `rateLimitRequests` | `integer` | ✗ | — | Лимит запросов (нужен вместе со следующим) |
-| `rateLimitWindowSeconds` | `integer` | ✗ | — | Окно лимита в секундах |
-| `tenantId` | `string` | ✗ | — | Тенант; если не задан — берётся из владельца |
+| `scopes` | `string[]` | ✔ | не пусто, ≤ 64 элементов, каждый не пустой и ≤ 128 символов; должны быть известны и не попадать под deny-patterns | Скоупы (см. [Скоупы](../features/scopes.md)) |
+| `expiresAt` | `string (ISO-8601)` | ✗ | должен быть **в будущем** | Абсолютный срок действия |
+| `slidingTtlSeconds` | `integer` | ✗ | > 0, ≤ 31536000 | Скользящее окно жизни |
+| `rateLimitRequests` | `integer` | ✗ | > 0, ≤ 1000000; обязателен вместе с `rateLimitWindowSeconds` | Лимит запросов (нужен вместе со следующим) |
+| `rateLimitWindowSeconds` | `integer` | ✗ | > 0, ≤ 31536000; обязателен вместе с `rateLimitRequests` | Окно лимита в секундах |
+| `tenantId` | `string` | ✗ | ≤ 128; при `scopes.allow-tenant-override=false` должен совпадать с тенантом владельца | Тенант; если не задан — берётся из владельца |
+
+!!! danger "Неизвестные поля JSON отклоняются"
+    Тело запроса разбирается строго: любое неизвестное свойство (например опечатка
+    `expireAt` вместо `expiresAt`) приводит к **400**. Раньше Jackson молча игнорировал такие
+    поля, и токен выпускался без срока действия.
+
+    Также **400** возвращается, если `rateLimitRequests` задан без `rateLimitWindowSeconds`
+    (и наоборот) — неполный лимит означал бы «без ограничений».
 
 Поля ответа: см. [`ApiTokenResponse`](#схемы-данных) и `rawToken`.
 
 !!! warning "Секрет показывается один раз"
     `rawToken` возвращается только этим ответом. В БД хранится хеш, восстановить токен нельзя.
-    Ответ **не кешируйте** и не логируйте.
+    Ответ помечен `Cache-Control: no-store` — не кешируйте и не логируйте его.
 
-!!! danger "Скоупы не валидируются"
-    Любая непустая строка принимается как скоуп. В режиме `identity` это позволяет выдать
-    токену authority `ROLE_ADMIN` и получить доступ к админскому API. Обязательно
-    ограничьте допустимые скоупы на стороне продукта — см.
-    [Повышение привилегий](../features/security.md#повышение-привилегий-через-скоупы).
+!!! info "Скоупы валидируются"
+    Режим задаётся свойством `openapi.tokens.scopes.validation.mode` (`off` | `deny-list` |
+    `catalog` | `strict`, по умолчанию `catalog`). Валидация выполняется **до** проверки квоты
+    и генерации секрета — при отказе ничего не сохраняется. Отказ возвращает **422** с полями
+    `reason` (`UNKNOWN_SCOPE` | `DENIED_SCOPE` | `NOT_GRANTABLE`) и `invalidScopes`.
+    Подробнее — [Режимы валидации скоупов](../configuration.md#режимы-валидации-скоупов).
 
 ### `GET /api/openapi/tokens` — список своих токенов
 
@@ -108,9 +128,14 @@ Authorization: Basic ZGVtbzpkZW1v
     "ownerId": "demo",
     "tenantId": "tenant-a",
     "status": "ACTIVE",
+    "effectiveStatus": "ACTIVE",
     "scopes": ["payments:read"],
     "expiresAt": "2027-01-01T00:00:00Z",
     "lastUsedAt": "2026-10-07T11:05:00Z",
+    "slidingTtlSeconds": 3600,
+    "rateLimitRequests": 100,
+    "rateLimitWindowSeconds": 60,
+    "createdBy": "demo",
     "createdAt": "2026-10-07T11:00:00Z",
     "revokedAt": null
   }
@@ -133,7 +158,9 @@ Authorization: Basic ZGVtbzpkZW1v
 **204 No Content** при успехе. Тело не возвращается — если нужно показать новый статус,
 запросите карточку после отзыва (или используйте UI, который делает это сам).
 
-Повторный отзыв → **400** (`Token already revoked`).
+Операция **идемпотентна**: повторный `DELETE` уже отозванного токена тоже возвращает
+**204 No Content** (а не 400) — безопасно для ретраев клиента. Для несуществующего токена —
+**404**.
 
 ### `GET /api/openapi/tokens/{id}/stats` — статистика использования
 
@@ -149,8 +176,16 @@ Authorization: Basic ZGVtbzpkZW1v
 
 ### `GET /api/openapi/tokens/{id}/audit` — журнал аудита
 
-Возвращает до **50** последних событий, отсортированных по времени убыванию.
-Параметров пагинации нет.
+Возвращает страницу событий, отсортированных по времени убыванию, в виде объектов
+`AuditEventResponse` (не доменных записей).
+
+| Параметр | По умолчанию | Ограничения |
+|---|---|---|
+| `offset` | `0` | `@Min(0)` |
+| `limit` | `50` | `@Min(1)` `@Max(500)` |
+
+Действия в журнале: `AUTHENTICATE`, `CREATE_TOKEN`, `REVOKE_TOKEN`, `BLOCK_TOKEN`,
+`UNBLOCK_TOKEN`.
 
 ```json
 [
@@ -174,21 +209,36 @@ Authorization: Basic ZGVtbzpkZW1v
 
 ## Администрирование
 
-Требуется authority `ROLE_ADMIN` (готовая цепочка статера: `hasRole("ADMIN")`).
+Требуется authority `ROLE_ADMIN`: готовая цепочка статера применяет `hasRole("ADMIN")` к
+`/api/openapi/admin/**`, а сам контроллер дополнительно помечен
+`@PreAuthorize("hasRole('ADMIN')")` (defense in depth; аннотация действует, когда приложение
+включает method security).
 
 | Метод | Путь | Описание | Ответ |
 |---|---|---|---|
-| `GET` | `/api/openapi/admin/tokens` | Все токены всех владельцев | `200` + массив `ApiTokenResponse` |
+| `GET` | `/api/openapi/admin/tokens?offset=0&limit=100` | Страница токенов всех владельцев (новые первыми) | `200` + JSON-массив `ApiTokenResponse` и заголовок `X-Total-Count` |
 | `GET` | `/api/openapi/admin/tokens/{id}` | Карточка любого токена | `200` + `ApiTokenResponse`, `404` если нет |
-| `GET` | `/api/openapi/admin/tokens/{id}/audit` | Аудит любого токена, до **100** событий | `200` + массив событий |
+| `GET` | `/api/openapi/admin/tokens/{id}/audit?offset=&limit=` | Аудит любого токена | `200` + JSON-массив `AuditEventResponse` |
 | `DELETE` | `/api/openapi/admin/tokens/{id}` | Принудительный отзыв | `204` |
 | `POST` | `/api/openapi/admin/tokens/{id}/block` | Блокировка | `200` + `ApiTokenResponse` (`status: BLOCKED`) |
 | `POST` | `/api/openapi/admin/tokens/{id}/unblock` | Разблокировка | `200` + `ApiTokenResponse` (`status: ACTIVE`) |
 
-!!! note "Фильтрации и пагинации нет"
-    `GET /api/openapi/admin/tokens` отдаёт **все** токены сразу (`findAll()`), без серверной
-    фильтрации по владельцу/статусу/тексту. Фильтры, которые видны в демо-UI
-    (`/admin/tokens`), выполняются в памяти на стороне контроллера UI.
+Параметры пагинации: `offset` (`@Min(0)`, по умолчанию `0`) и `limit`
+(`@Min(1)`, `@Max(500)`; по умолчанию `100` для списка токенов и аудита администратора,
+`50` — для аудита владельца). Общее число токенов отдаётся заголовком `X-Total-Count`:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Total-Count: 42
+
+[ { "id": "0f9a1b7c-…", "name": "ci-bot", … } ]
+```
+
+!!! note "Серверной фильтрации нет"
+    `GET /api/openapi/admin/tokens` поддерживает только постраничную выдачу, без фильтрации
+    по владельцу/статусу/тексту. Фильтры, которые видны в демо-UI (`/admin/tokens`),
+    выполняются в памяти на стороне контроллера UI.
 
 ```bash
 # блокировка
@@ -249,15 +299,22 @@ curl -u admin:admin http://localhost:8080/api/openapi/admin/tokens
 | `ownerId` | `string` | ✗ |
 | `tenantId` | `string` | ✔ |
 | `status` | `string` (`ACTIVE`/`BLOCKED`/`REVOKED`/`EXPIRED`) | ✗ |
+| `effectiveStatus` | `string` (`ACTIVE`/`BLOCKED`/`REVOKED`/`EXPIRED`) | ✗ |
 | `scopes` | `string[]` | ✗ |
 | `expiresAt` | `string (ISO-8601)` | ✔ |
 | `lastUsedAt` | `string (ISO-8601)` | ✔ |
+| `slidingTtlSeconds` | `integer` | ✔ |
+| `rateLimitRequests` | `integer` | ✔ |
+| `rateLimitWindowSeconds` | `integer` | ✔ |
+| `createdBy` | `string` | ✔ |
 | `createdAt` | `string (ISO-8601)` | ✗ |
 | `revokedAt` | `string (ISO-8601)` | ✔ |
 
-!!! note "`slidingTtlSeconds` и rate limit не возвращаются"
-    В ответе нет `slidingTtlSeconds`, `rateLimitRequests`, `rateLimitWindowSeconds`, `createdBy`.
-    Чтобы показать их в интерфейсе, потребуется расширить DTO (это изменение библиотеки).
+!!! note "`effectiveStatus` вычисляется на лету"
+    `status` — состояние, хранимое в БД: просроченный токен остаётся там `ACTIVE`. Поле
+    `effectiveStatus` считает `EXPIRED` для `ACTIVE`-токена с прошедшим `expiresAt`; для
+    остальных статусов оно совпадает со `status`. Клиентам, которые показывают состояние
+    пользователю, следует опираться на `effectiveStatus`.
 
 ### `CreatedTokenResponse`
 
@@ -297,7 +354,7 @@ curl -u admin:admin http://localhost:8080/api/openapi/admin/tokens
 | `tenantId` | `string` | ✔ |
 | `httpMethod` | `string` | ✔ |
 | `endpoint` | `string` | ✔ |
-| `action` | `string` (`AUTHENTICATE`) | ✔ |
+| `action` | `string` (`AUTHENTICATE`/`CREATE_TOKEN`/`REVOKE_TOKEN`/`BLOCK_TOKEN`/`UNBLOCK_TOKEN`) | ✔ |
 | `success` | `boolean` | ✗ |
 | `responseStatus` | `number` | ✔ |
 | `ip` | `string` | ✔ |
@@ -308,17 +365,27 @@ curl -u admin:admin http://localhost:8080/api/openapi/admin/tokens
 
 ## Ошибки
 
-Все ошибки возвращаются в формате **RFC 7807 `ProblemDetail`**
+Все ошибки MVC-слоя возвращаются в формате **RFC 7807 `ProblemDetail`**
 (`application/problem+json`) обработчиком `ApiTokenExceptionHandler`.
 
-| Исключение | HTTP | `title` | `detail` |
+| Исключение | HTTP | `title` | `detail` / свойства |
 |---|---|---|---|
-| `ApiTokenNotFoundException` | **404** | `API Token Not Found` | `API token not found: {id}` / `API token not found for prefix: {prefix}` |
-| `QuotaExceededException` | **409** | `Token Quota Exceeded` | `Token quota exceeded for owner '{owner}': max {N}` |
-| `InvalidTokenStateException` | **400** | `Invalid Token Request` | `Token already revoked` / `Only ACTIVE tokens can be blocked` / `Only BLOCKED tokens can be unblocked` / `Cannot touch non-active token` |
+| `MethodArgumentNotValidException` | **400** | `Validation Failed` | Сообщение первой ошибки; свойство `errors` — map «поле → сообщение» |
+| `ConstraintViolationException` | **400** | `Validation Failed` | Сообщение нарушения (валидация параметров запроса, например `limit`) |
+| `HttpMessageNotReadableException` | **400** | `Malformed Request` | `Request body is missing or malformed` (в том числе неизвестное поле JSON) |
+| `MethodArgumentTypeMismatchException` | **400** | `Malformed Request` | `Parameter '{name}' has an invalid value` |
+| `InvalidTokenStateException` | **400** | `Invalid Token Request` | `Only ACTIVE tokens can be blocked` / `Only BLOCKED tokens can be unblocked` / `Cannot touch non-active token` |
 | `EmptyScopesException` | **400** | `Invalid Token Request` | `Token must have at least one scope` |
-| `IllegalArgumentException` | **400** | `Invalid Token Request` | сообщение из домена (например, про `slidingTtl`) |
-| `MethodArgumentNotValidException` | **400** | `Validation Failed` | сообщение **первой** ошибки валидации, иначе `Validation failed` |
+| `IllegalArgumentException` | **400** | `Invalid Token Request` | Сообщение из домена (например, про `slidingTtl` или `prefixLength`) |
+| `TenantNotAllowedException` | **403** | `Tenant Not Allowed` | `Tenant override is not allowed: requested '{requested}', owner tenant '{owner}'` |
+| `ApiTokenNotFoundException` | **404** | `API Token Not Found` | `API token not found: {id}` (в том числе чужой токен — существование не раскрывается) |
+| `QuotaExceededException` | **409** | `Token Quota Exceeded` | `Token quota exceeded for owner '{owner}': max {N}` |
+| `ConcurrentTokenModificationException` | **409** | `Concurrent Modification` | Конкурентное изменение токена (optimistic locking) |
+| `InvalidScopeException` | **422** | `Invalid Scopes` | Свойства `reason` (`UNKNOWN_SCOPE`\|`DENIED_SCOPE`\|`NOT_GRANTABLE`) и `invalidScopes` |
+
+Итого по кодам: **201** — создание, **400** — ошибки валидации/формата тела/неизвестное поле,
+**403** — запрет tenant-override, **404** — токен не найден, **409** — квота или конкурентное
+изменение, **422** — недопустимые скоупы.
 
 ```json
 {
@@ -329,20 +396,49 @@ curl -u admin:admin http://localhost:8080/api/openapi/admin/tokens
 }
 ```
 
-### Ошибки аутентификации (не `ProblemDetail`)
+Пример 400 с картой ошибок валидации:
 
-Их формирует не MVC-обработчик, а `ApiTokenAuthenticationFilter` через `response.sendError`,
-поэтому тело — стандартная страница ошибки контейнера, а не JSON:
+```json
+{
+  "type": "about:blank",
+  "title": "Validation Failed",
+  "status": 400,
+  "detail": "must not be empty",
+  "errors": {
+    "name": "must not be blank",
+    "scopes": "must not be empty"
+  }
+}
+```
 
-| Ситуация | HTTP | Сообщение |
-|---|---|---|
-| Токен отсутствует / не начинается с `Bearer atk_` | запрос идёт дальше по цепочке; если других механизмов нет — 401/403 от Spring Security | — |
-| Неверный формат, неизвестный префикс, неверный секрет, статус не `ACTIVE`, истёк TTL | **401** | `Unauthorized` |
-| Превышен rate limit | **429** | `Rate limit exceeded` |
+Пример 422 при отклонённых скоупах:
 
-!!! note "Нет единого формата ошибок аутентификации"
-    Продукту, которому нужен JSON и на 401/429, стоит заменить фильтр или настроить
-    свой `AuthenticationEntryPoint`/`AccessDeniedHandler`.
+```json
+{
+  "type": "about:blank",
+  "title": "Invalid Scopes",
+  "status": 422,
+  "detail": "Invalid scopes (UNKNOWN_SCOPE): [payments:write]",
+  "reason": "UNKNOWN_SCOPE",
+  "invalidScopes": ["payments:write"]
+}
+```
+
+### Ошибки аутентификации на уровне фильтра
+
+`ApiTokenAuthenticationFilter` отвечает сам (не через MVC-обработчик), но в том же
+`application/problem+json` и с корректными заголовками:
+
+| Ситуация | HTTP | Заголовок | Тело |
+|---|---|---|---|
+| Токен отсутствует / не начинается с `Bearer atk_` | запрос идёт дальше по цепочке; если других механизмов нет — 401/403 от Spring Security | — | — |
+| Неверный формат, неизвестный префикс, неверный секрет, статус не `ACTIVE`, истёк TTL, пустые authority | **401** | `WWW-Authenticate: Bearer` | `{"status":401,"title":"Unauthorized","detail":"Unauthorized"}` |
+| Превышен rate limit (per-token или пред-аутентификационный) | **429** | `Retry-After: {rate-limit.retry-after-seconds}` | `{"status":429,"title":"Too Many Requests","detail":"Rate limit exceeded"}` |
+
+!!! note "Причина пустых authority"
+    При `openapi.tokens.auth.reject-empty-authorities=true` (по умолчанию) токен, который
+    после резолва скоупов не даёт **ни одной** authority, не аутентифицируется → **401**.
+    Это защита от «пустого» принципала, а не ошибка клиента.
 
 ### Необработанные ошибки
 

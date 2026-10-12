@@ -32,7 +32,7 @@ public class ScopeCatalogViewController {
     @GetMapping
     public String list(Model model) {
         model.addAttribute("scopes", mapper.toScopeViews(scopeCatalog.listScopes()));
-        model.addAttribute("scopesMode", properties.getScopes().getMode());
+        model.addAttribute("scopesMode", properties.getScopes().getMode().name().toLowerCase(java.util.Locale.ROOT));
         return "ui/scopes";
     }
 }

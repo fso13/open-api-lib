@@ -1,4 +1,4 @@
-# Сборка и публикация сайта документации на GitLab Pages.
+# Сборка, тесты и публикация сайта документации на GitLab Pages.
 #
 # GitLab Pages публикует содержимое каталога `public/` из артефактов job'а `pages`.
 # После первого успешного pipeline сайт будет доступен по адресу из переменной CI_PAGES_URL
@@ -8,14 +8,49 @@ stages:
   - test
   - docs
 
-# Существующие стадии сборки/тестов проекта (Gradle) при необходимости добавьте сюда —
-# job ниже от них не зависит.
+variables:
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle-ci"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+test:
+  stage: test
+  image: eclipse-temurin:21-jdk
+  services:
+    - name: docker:dind
+      alias: docker
+  variables:
+    # Testcontainers поднимает PostgreSQL, поэтому нужен Docker.
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    TESTCONTAINERS_RYUK_DISABLED: "true"
+  cache:
+    key: gradle
+    paths:
+      - .gradle-ci/caches
+      - .gradle-ci/wrapper
+  before_script:
+    - chmod +x ./gradlew
+  script:
+    - ./gradlew --no-daemon build
+  artifacts:
+    when: always
+    expire_in: 14 days
+    reports:
+      junit: "*/build/test-results/test/*.xml"
+    paths:
+      - "*/build/reports/tests/test"
+      - "*/build/reports/jacoco"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
 
 pages:
   stage: docs
   image: python:3.12-slim
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    # Иначе mkdocs подставляет site_url по умолчанию (https://example.com/...)
+    SITE_URL: "$CI_PAGES_URL/"
   cache:
     key: docs-pip
     paths:

@@ -22,8 +22,8 @@ public final class MappedScopeResolver implements ScopeResolver {
     public Set<String> resolve(Set<String> tokenScopes, String tenantId) {
         Objects.requireNonNull(tokenScopes, "tokenScopes");
         final Set<String> authorities = new LinkedHashSet<>();
-        for (String tokenScope : tokenScopes) {
-            authorities.addAll(mappingSource.projectScopesFor(tokenScope, tenantId));
+        for (Set<String> projectScopes : mappingSource.projectScopesFor(tokenScopes, tenantId).values()) {
+            authorities.addAll(projectScopes);
         }
         return Collections.unmodifiableSet(authorities);
     }

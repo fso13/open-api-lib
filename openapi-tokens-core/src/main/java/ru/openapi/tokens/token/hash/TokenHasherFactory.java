@@ -19,4 +19,13 @@ public final class TokenHasherFactory {
             case BCRYPT -> new BcryptTokenHasher();
         };
     }
+
+    /**
+     * Algorithm-tagged hasher used by the auto-configuration: the configured algorithm is used for
+     * new hashes, while existing hashes keep verifying with the algorithm recorded in their tag
+     * (or detected from a legacy native prefix).
+     */
+    public static TokenHasher createTagged(HashingAlgorithm algorithm) {
+        return new AlgorithmTaggedTokenHasher(algorithm);
+    }
 }

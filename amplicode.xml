@@ -17,6 +17,9 @@
           <package value="ru.openapi.tokens.sample.keycloak" />
         </packages>
       </persistence-unit>
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-sample-ui.main" name="Default" />
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-spring-boot-starter.main" name="Default" />
+      <persistence-unit moduleName="open-api-lib.openapi-tokens-autoconfigure.main" name="Default" />
     </persistence-units>
   </component>
 </project>

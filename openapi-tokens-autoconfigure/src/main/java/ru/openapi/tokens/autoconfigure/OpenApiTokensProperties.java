@@ -1,14 +1,20 @@
 package ru.openapi.tokens.autoconfigure;
 
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 import ru.openapi.tokens.token.hash.HashingAlgorithm;
+import ru.openapi.tokens.token.scope.ScopeMode;
+import ru.openapi.tokens.token.scope.ScopeValidationMode;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -64,6 +70,19 @@ public class OpenApiTokensProperties {
     public static class Auth {
         @NotBlank
         private String mode = "internal";
+        /**
+         * Reject tokens that resolve to no authorities at all (a token that grants nothing should
+         * not authenticate).
+         */
+        private boolean rejectEmptyAuthorities = true;
+        /**
+         * Failed authentication attempts allowed per token prefix and window. {@code 0} disables
+         * pre-authentication throttling.
+         */
+        @Min(0)
+        private int failedAttemptLimit = 60;
+        @Min(1)
+        private int failedAttemptWindowSeconds = 60;
         private final Keycloak keycloak = new Keycloak();
 
         public String getMode() {
@@ -72,6 +91,30 @@ public class OpenApiTokensProperties {
 
         public void setMode(String mode) {
             this.mode = mode;
+        }
+
+        public boolean isRejectEmptyAuthorities() {
+            return rejectEmptyAuthorities;
+        }
+
+        public void setRejectEmptyAuthorities(boolean rejectEmptyAuthorities) {
+            this.rejectEmptyAuthorities = rejectEmptyAuthorities;
+        }
+
+        public int getFailedAttemptLimit() {
+            return failedAttemptLimit;
+        }
+
+        public void setFailedAttemptLimit(int failedAttemptLimit) {
+            this.failedAttemptLimit = failedAttemptLimit;
+        }
+
+        public int getFailedAttemptWindowSeconds() {
+            return failedAttemptWindowSeconds;
+        }
+
+        public void setFailedAttemptWindowSeconds(int failedAttemptWindowSeconds) {
+            this.failedAttemptWindowSeconds = failedAttemptWindowSeconds;
         }
 
         public Keycloak getKeycloak() {
@@ -99,8 +142,14 @@ public class OpenApiTokensProperties {
     }
 
     public static class Scopes {
-        @NotBlank
-        private String mode = "identity";
+        @NotNull
+        private ScopeMode mode = ScopeMode.IDENTITY;
+        /**
+         * Allow a client to create a token for a tenant other than its own. Off by default: the
+         * tenant is taken from the authenticated owner.
+         */
+        private boolean allowTenantOverride = false;
+        private final Validation validation = new Validation();
         private Map<String, Set<String>> mappings = new HashMap<>();
         /**
          * Catalog of token scopes: scope name → human readable description. Rendered by the
@@ -113,12 +162,24 @@ public class OpenApiTokensProperties {
          */
         private Map<String, String> catalog = new HashMap<>();
 
-        public String getMode() {
+        public ScopeMode getMode() {
             return mode;
         }
 
-        public void setMode(String mode) {
+        public void setMode(ScopeMode mode) {
             this.mode = mode;
+        }
+
+        public boolean isAllowTenantOverride() {
+            return allowTenantOverride;
+        }
+
+        public void setAllowTenantOverride(boolean allowTenantOverride) {
+            this.allowTenantOverride = allowTenantOverride;
+        }
+
+        public Validation getValidation() {
+            return validation;
         }
 
         public Map<String, Set<String>> getMappings() {
@@ -138,6 +199,50 @@ public class OpenApiTokensProperties {
         }
     }
 
+    /**
+     * Scope validation performed when a token is created.
+     */
+    public static class Validation {
+        /**
+         * {@code off | deny-list | catalog | strict}. Defaults to {@code catalog}: requested scopes
+         * must be known scopes and must not match a denied pattern.
+         */
+        @NotNull
+        private ScopeValidationMode mode = ScopeValidationMode.CATALOG;
+        /**
+         * Scopes that can never be granted, for example Spring Security roles.
+         */
+        private List<String> denyPatterns = new ArrayList<>(List.of("ROLE_.*"));
+        /**
+         * Authorities allowed to delegate any scope (only relevant for {@code strict}).
+         */
+        private Set<String> privilegedAuthorities = new LinkedHashSet<>(Set.of("ROLE_ADMIN"));
+
+        public ScopeValidationMode getMode() {
+            return mode;
+        }
+
+        public void setMode(ScopeValidationMode mode) {
+            this.mode = mode;
+        }
+
+        public List<String> getDenyPatterns() {
+            return denyPatterns;
+        }
+
+        public void setDenyPatterns(List<String> denyPatterns) {
+            this.denyPatterns = denyPatterns;
+        }
+
+        public Set<String> getPrivilegedAuthorities() {
+            return privilegedAuthorities;
+        }
+
+        public void setPrivilegedAuthorities(Set<String> privilegedAuthorities) {
+            this.privilegedAuthorities = privilegedAuthorities;
+        }
+    }
+
     public static class Hashing {
         @NotNull
         private HashingAlgorithm algorithm = HashingAlgorithm.ARGON2;
@@ -154,6 +259,12 @@ public class OpenApiTokensProperties {
     public static class RateLimit {
         @NotBlank
         private String backend = "memory";
+        /**
+         * Value of the {@code Retry-After} header sent with 429 responses.
+         */
+        @Min(1)
+        @Max(86_400)
+        private int retryAfterSeconds = 60;
 
         public String getBackend() {
             return backend;
@@ -161,6 +272,14 @@ public class OpenApiTokensProperties {
 
         public void setBackend(String backend) {
             this.backend = backend;
+        }
+
+        public int getRetryAfterSeconds() {
+            return retryAfterSeconds;
+        }
+
+        public void setRetryAfterSeconds(int retryAfterSeconds) {
+            this.retryAfterSeconds = retryAfterSeconds;
         }
     }
 

@@ -12,9 +12,14 @@ public record ApiTokenResponse(
         String ownerId,
         String tenantId,
         String status,
+        String effectiveStatus,
         Set<String> scopes,
         Instant expiresAt,
         Instant lastUsedAt,
+        Integer slidingTtlSeconds,
+        Integer rateLimitRequests,
+        Integer rateLimitWindowSeconds,
+        String createdBy,
         Instant createdAt,
         Instant revokedAt
 ) {

@@ -24,7 +24,7 @@ public final class ApiTokenPermissionEvaluator implements PermissionEvaluator, A
 
     @Override
     public boolean hasPermission(Authentication authentication, Object targetDomainObject, Object permission) {
-        return hasAuthority(String.valueOf(permission));
+        return hasAuthority(authentication, String.valueOf(permission));
     }
 
     @Override
@@ -34,17 +34,26 @@ public final class ApiTokenPermissionEvaluator implements PermissionEvaluator, A
             String targetType,
             Object permission
     ) {
-        return hasAuthority(String.valueOf(permission));
+        return hasAuthority(authentication, String.valueOf(permission));
     }
 
     @Override
     public boolean hasAuthority(String authority) {
-        final Authentication authentication = authenticationSupplier.get();
-        if (authentication == null || !authentication.isAuthenticated()) {
+        return hasAuthority(authenticationSupplier.get(), authority);
+    }
+
+    /**
+     * Checks the given authentication when present, falling back to the current security context
+     * otherwise. Using the passed principal avoids deciding on the wrong identity when the
+     * expression is evaluated for another authentication.
+     */
+    private boolean hasAuthority(Authentication authentication, String authority) {
+        final Authentication effective = authentication != null ? authentication : authenticationSupplier.get();
+        if (effective == null || !effective.isAuthenticated()) {
             return false;
         }
-        return authentication.getAuthorities().stream()
-                .anyMatch(granted -> granted.getAuthority().equals(authority));
+        return effective.getAuthorities().stream()
+                .anyMatch(granted -> authority.equals(granted.getAuthority()));
     }
 
     @Override

@@ -51,7 +51,7 @@ public class TokenLifecycleSteps {
         this.ownerId = ownerId;
         initMocks();
         when(ownerResolver.resolveCurrentOwner()).thenReturn(TokenOwner.of(ownerId));
-        when(repository.countByOwnerId(ownerId)).thenReturn((long) count);
+        when(repository.countUsableByOwnerId(ownerId)).thenReturn((long) count);
         when(tokenHasher.hash(anyString())).thenReturn("hashed");
         when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
     }

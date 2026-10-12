@@ -34,12 +34,15 @@
 - **Формат токена** `atk_<prefix>_<secret>` — публичный префикс для поиска + 32 байта энтропии
   в секрете; секрет хешируется Argon2id (по умолчанию) или BCrypt.
 - **Скоупы** — 1:1 (`identity`) и 1:M (`mapped`), конфигурационные и хранимые в БД маппинги,
-  справочник скоупов с человекочитаемыми описаниями (`GET /api/openapi/scopes`).
+  справочник скоупов с человекочитаемыми описаниями (`GET /api/openapi/scopes`) и **валидация
+  запрошенных скоупов** при создании токена (режимы `off`/`deny-list`/`catalog`/`strict`,
+  запрет `ROLE_.*` по умолчанию, отказ → `422`).
 - **TTL** — абсолютный срок жизни и/или скользящее окно, продлеваемое при успешной аутентификации.
 - **Rate limiting** — per-token политика (запросов в окно), in-memory backend на Bucket4j.
 - **Spring Security** — `ApiTokenAuthenticationFilter`, `AuthenticationProvider`, `PermissionEvaluator`;
   готовый `SecurityFilterChain` для `/api/openapi/**`; режимы `internal` и `keycloak`.
-- **Аудит и статистика** — асинхронная запись событий аутентификации, статистика
+- **Аудит и статистика** — асинхронная запись событий аутентификации и жизненного цикла
+  (`CREATE_TOKEN`/`REVOKE_TOKEN`/`BLOCK_TOKEN`/`UNBLOCK_TOKEN`), статистика
   (всего/успешных/неуспешных обращений, время последнего использования).
 - **REST API «из коробки»** — пользовательские и административные контроллеры токенов и справочник скоупов.
 - **Точки расширения** — любой компонент (хешер, хранилище, rate limiter, resolver прав,
@@ -85,7 +88,7 @@ graph TD
 | Модуль | Назначение |
 |---|---|
 | [`openapi-tokens-core`](api/java-api.md) | Домен (`ApiToken`, `RawToken`, `TokenExpiry`, `TokenStatus`), порты (SPI), хешеры, резолверы скоупов, rate limiter, `DefaultApiTokenService`. Без Spring и без JPA. |
-| `openapi-tokens-persistence-jpa` | JPA-сущности, Spring Data репозитории, адаптеры портов, Flyway-миграции `V1__api_tokens.sql`, `V2__scope_catalog.sql`. |
+| `openapi-tokens-persistence-jpa` | JPA-сущности, Spring Data репозитории, адаптеры портов, Flyway-миграции `V1__api_tokens.sql`, `V2__scope_catalog.sql`, `V3__hardening.sql`. |
 | `openapi-tokens-security` | `ApiTokenAuthenticationFilter`, `ApiTokenAuthenticationProvider`, `ApiTokenAuthentication`, `ApiTokenPermissionEvaluator`, `InternalTokenOwnerResolver`, `KeycloakTokenOwnerResolver`. |
 | `openapi-tokens-web` | REST-контроллеры `/api/openapi/tokens`, `/api/openapi/admin/tokens`, `/api/openapi/scopes`, DTO и `@RestControllerAdvice` с `ProblemDetail`. |
 | `openapi-tokens-autoconfigure` | `OpenApiTokensAutoConfiguration`, `OpenApiTokensPersistenceAutoConfiguration`, `OpenApiTokensProperties`, `TransactionalApiTokenService`. |
@@ -153,6 +156,10 @@ openapi:
 
 ## Лицензия и статус
 
-Версия `0.1.0-SNAPSHOT` — библиотека в активной разработке. Публикация в Maven-репозиторий
-не настроена (`maven-publish` в модулях отсутствует), подключение предполагается через
-`includeBuild` / локальный репозиторий. См. [Ограничения и roadmap](operations/roadmap.md).
+Версия `0.1.0-SNAPSHOT` — библиотека в активной разработке. Публикация настроена через
+`maven-publish` для библиотечных модулей (можно публиковать в локальный или корпоративный
+репозиторий), но `publishing.repositories` и подпись не заданы, поэтому в Maven Central/Nexus
+артефакта пока нет: подключение предполагается через `includeBuild` / локальный репозиторий.
+Известные ограничения и план развития — в разделе
+[Ограничения и roadmap](operations/roadmap.md) (закрытые дефекты hardening — в подразделе
+«Что уже исправлено»).

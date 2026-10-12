@@ -92,10 +92,23 @@ openapi:
       mode: internal        # владелец — из текущей аутентификации приложения
     scopes:
       mode: identity        # скоуп токена = право приложения
-      catalog:
+      validation:
+        mode: catalog       # off | deny-list | catalog | strict (по умолчанию catalog)
+        deny-patterns: ["ROLE_.*"]
+        privileged-authorities: ["ROLE_ADMIN"]
+      allow-tenant-override: false
+      catalog:              # ← обязательный минимум при mode != off
         "[payments:read]": "Чтение платежей"
         "[reports:read]": "Чтение отчётов"
 ```
+
+!!! danger "Если `scopes.validation.mode != off`, скоупы должны быть объявлены"
+    Каждый запрошенный скоуп обязан быть известен: описан в `scopes.catalog`, присутствовать
+    в таблице `scope_catalog` или упоминаться в `scopes.mappings`. Иначе
+    `POST /api/openapi/tokens` вернёт **422** (`Invalid Scopes`), и выпустить токен не
+    получится. При настройках по умолчанию (`mode: catalog`) пустой `scopes.catalog`
+    означает, что не известен **ни один** скоуп — поэтому блок `catalog` в примере выше
+    обязателен.
 
 !!! danger "`ddl-auto` не должен быть `update`/`create`"
     Схема принадлежит Flyway-миграциям библиотеки. Используйте `validate` (как в демо-приложении),
@@ -264,9 +277,10 @@ Testcontainers. Подробнее — [Тестирование](operations/tes
 - [ ] Настроена аутентификация пользователей (Basic/form/Keycloak) и `@EnableMethodSecurity`.
 - [ ] Определён режим скоупов (`identity` или `mapped`) и заполнен `scopes.catalog`.
 - [ ] `scopes.catalog` использует квадратные скобки в ключах со `:`.
-- [ ] Значение `limits.max-tokens-per-owner` соответствует бизнес-требованиям.
-- [ ] **Ограничен набор допустимых скоупов** при создании токена (иначе возможно
-      повышение привилегий — см. [Аутентификация](features/security.md#повышение-привилегий-через-скоупы)).
+- [ ] **Все выпускаемые скоупы объявлены** в `scopes.catalog`, таблице `scope_catalog` или `scopes.mappings` (иначе `POST /api/openapi/tokens` → 422).
+- [ ] Выбран `scopes.validation.mode` (`catalog` по умолчанию; `strict` — если нужно запретить делегирование прав, которых нет у вызывающего).
+- [ ] Значение `limits.max-tokens-per-owner` соответствует бизнес-требованиям (слот занимают `ACTIVE` и `BLOCKED`).
+- [ ] Проверено `scopes.allow-tenant-override` (по умолчанию `false` — чужой `tenantId` → 403).
 - [ ] Настроена ротация/уборка таблицы `api_token_audit_log`.
 - [ ] Решено, нужен ли Redis-лимитер (в кластере in-memory даёт N× лимит).
 - [ ] Проверен `openapi.tokens.auth.mode` (для Keycloak добавлена зависимость resource-server).
@@ -277,14 +291,17 @@ Testcontainers. Подробнее — [Тестирование](operations/tes
 | Симптом | Причина | Решение |
 |---|---|---|
 | Приложение не стартует: `Schema-validation: missing table [api_token]` | Flyway не выполнился | `spring.flyway.enabled=true`, проверить `spring.flyway.locations` |
-| Приложение не стартует: `BindValidationException` | Некорректное свойство `openapi.tokens.*` | Проверить `@Min`/`@NotBlank`-ограничения в [Конфигурации](configuration.md#валидация-свойств) |
+| Приложение не стартует: `BindValidationException` | Некорректное свойство `openapi.tokens.*` (в том числе опечатка в enum: `identiy`, `catlog`, `deny_list`) | Проверить `@Min`/`@NotBlank`-ограничения и допустимые значения enum в [Конфигурации](configuration.md#валидация-свойств) |
 | `IllegalStateException: No authenticated principal for token owner resolution` | Нет аутентификации при вызове `/api/openapi/tokens` | Настроить Basic/form/Keycloak для этих путей |
 | В справочнике скоупов «битые» имена (`payments` вместо `payments:read`) | Ключ без квадратных скобок | `"[payments:read]": "…"` |
 | `POST /api/openapi/tokens` → 400 `prefixLength must be between 4 and 16` | `token.prefix-length` ≥ 17 | Значение 4…16 |
-| `POST` → 409 `Token quota exceeded` | Достигнут лимит (учитываются и отозванные токены) | Поднять `limits.max-tokens-per-owner` |
+| `POST /api/openapi/tokens` → 400 с `errors` | Ошибка валидации полей: пустой `name`, `expiresAt` в прошлом, неполный rate limit, неизвестное поле JSON | Смотреть `errors` (map «поле → сообщение») в `ProblemDetail` |
+| `POST /api/openapi/tokens` → **422** `Invalid Scopes` | Скоуп не объявлен (`UNKNOWN_SCOPE`), попадает под `deny-patterns` (`DENIED_SCOPE`) или вызывающий сам не обладает такой authority (`NOT_GRANTABLE`) | Объявить скоуп в `scopes.catalog`/`scope_catalog`/`scopes.mappings`, убрать его из deny-patterns или взять `scopes.validation.mode` мягче |
+| `POST /api/openapi/tokens` → 403 `Tenant Not Allowed` | В запросе чужой `tenantId`, а `scopes.allow-tenant-override=false` | Не передавать `tenantId` (берётся из владельца) или включить override осознанно |
+| `POST /api/openapi/tokens` → 409 `Token quota exceeded` | Достигнут лимит рабочих токенов (считаются `ACTIVE` и `BLOCKED`) | Отозвать ненужные токены (освобождает слот) или поднять `limits.max-tokens-per-owner` |
+| Запрос с токеном → 401, хотя токен новый | Токен просрочен или `BLOCKED`/`REVOKED`; либо скоупы не дают **ни одной** authority (`auth.reject-empty-authorities`) | Проверить `expiresAt`, `status`/`effectiveStatus`, `slidingTtlSeconds` и справочник скоупов |
+| Запрос → 429 | Сработал rate limit (per-token или пред-аутентификационный) | Уменьшить частоту, увеличить лимит при перевыпуске токена или поднять `auth.failed-attempt-limit` |
 | Статистика всегда нулевая | Нет бина `AuditLogRepository` (не подключена персистентность) | Проверить `DataSource` и `ddl-auto` |
-| Запрос с токеном → 401, хотя токен новый | Токен просрочен или `BLOCKED`/`REVOKED` | Проверить `expiresAt`, `status`, `slidingTtlSeconds` |
-| Запрос → 429 | Сработал rate limit | Уменьшить частоту или увеличить лимит при перевыпуске токена |
 | CSS/статика UI отдаётся 401 | `PUBLIC_PATHS` не входит в `securityMatchers` UI-цепочки | Добавить `/css/**` в `WebSecurityCustomizer` — детали в [Web UI](guides/web-ui.md#7-известные-особенности) |
 
 ## Что дальше

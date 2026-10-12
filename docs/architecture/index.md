@@ -45,16 +45,17 @@ flowchart TB
 | Домен и порты | `openapi-tokens-core` | Только Argon2, BCrypt, Bucket4j, SLF4J | Инварианты токена, команды, TTL, порты, сервис, резолверы скоупов, rate limiter, асинхронный аудит |
 | Персистентность | `openapi-tokens-persistence-jpa` | core + Spring Data JPA + Flyway + PostgreSQL | Сущности, репозитории Spring Data, адаптеры портов, миграции |
 | Безопасность | `openapi-tokens-security` | core + Spring Security + Spring Web | Фильтр, `AuthenticationProvider`, `Authentication`, `PermissionEvaluator`, резолверы владельца |
-| HTTP-адаптер | `openapi-tokens-web` | core + security + Spring Web/Validation | Контроллеры, DTO, маппер, обработчик ошибок |
+| HTTP-адаптер | `openapi-tokens-web` | core + Spring Web/Security/Validation | Контроллеры, DTO, маппер, обработчик ошибок |
 | Конфигурация | `openapi-tokens-autoconfigure` | core + persistence + security + web | Авто-конфигурация, свойства, транзакционный декоратор, готовая цепочка безопасности |
 | Агрегатор | `openapi-tokens-spring-boot-starter` | все модули (api) | Точка подключения для продуктов |
 | Демо (`internal`) | `openapi-tokens-sample` | starter + UI-модуль | Пример интеграции: REST, form login, демо-API |
 | Библиотека UI | `openapi-tokens-sample-ui` | starter + Thymeleaf | Общий server-rendered интерфейс пользователя и администратора |
 | Демо (`keycloak`) | `openapi-tokens-sample-keycloak` | starter + UI-модуль + oauth2 client/resource-server | OIDC-вход через Keycloak, приём Keycloak JWT и API-токена, маппинг ролей |
 
-**Направление зависимостей** (проверяется ArchUnit-тестом в модуле персистентности):
-`core` не зависит ни от чего, кроме библиотек хеширования/лимитов; `dto` не знает про `@Entity`;
-`@Entity` не знает про `dto`.
+**Направление зависимостей** проверяется ArchUnit-тестом `ArchitectureTest` в модуле
+`openapi-tokens-autoconfigure` (4 правила, без `allowEmptyShould`): `dto` не знает про `@Entity`;
+`@Entity` не знает про `dto`; ядро (`ru.openapi.tokens.token..`) не зависит от Spring, JPA и
+Servlet API; внутренние классы `persistence.internal` не «протекают» наружу.
 
 ## Ядро: домен и порты
 
@@ -115,7 +116,7 @@ flowchart TD
     PERS -- да --> JPACFG["OpenApiTokensPersistenceJpaConfig<br/>@ComponentScan / @EntityScan / @EnableJpaRepositories"]
     PERS -- нет --> SKIP["Персистентность не подключается"]
     JPACFG --> MAIN["OpenApiTokensAutoConfiguration"]
-    MAIN --> BEANS["Clock, TokenHasher, RateLimiter, ScopeMappingSource,<br/>ScopeResolver, ScopeCatalog, TokenOwnerResolver,<br/>AuditRecorder + executor, ApiTokenService,<br/>ApiTokenAuthenticator, mapper, 3 контроллера,<br/>exception handler, фильтр, SecurityFilterChain"]
+    MAIN --> BEANS["Clock, TokenHasher, RateLimiter, ScopeMappingSource,<br/>ScopeResolver, ScopeCatalog, ScopeValidator, TokenOwnerResolver,<br/>AuditRecorder + executor, ApiTokenService,<br/>ApiTokenAuthenticator, mapper, 3 контроллера,<br/>exception handler, фильтр (не глобальный), SecurityFilterChain"]
 ```
 
 Ключевые правила:
@@ -132,6 +133,11 @@ flowchart TD
 - **`AuthenticationProvider` для токенов не публикуется как бин** — создаётся локальный
   `ProviderManager` внутри фильтра. Причина (комментарий в коде): бин-провайдер заменил бы
   глобальный `DaoAuthenticationProvider` и сломал form-login/HTTP Basic.
+- **Фильтр — не глобальный сервлет-фильтр.** Для `ApiTokenAuthenticationFilter` создаётся
+  `FilterRegistrationBean` с `enabled = false`, поэтому Boot не регистрирует его на все URL.
+  Фильтр добавляется только внутри цепочек безопасности: `openapiTokensSecurityFilterChain`
+  (`@Order(1)`, `securityMatcher("/api/openapi/**")`) и, при использовании модуля UI,
+  `TokenUiSecurity.uiChain`. Запросы вне этих цепочек он не перехватывает.
 - **Транзакции**: `ApiTokenService` — это `TransactionalApiTokenService` с
   `@Transactional(readOnly = true)` на классе и `@Transactional` на мутирующих методах
   (`create`, `revoke`, `block`, `forceRevoke`, `forceBlock`, `touchLastUsed`).
@@ -186,7 +192,7 @@ flowchart LR
 | Решение | Обоснование | Следствие |
 |---|---|---|
 | Поиск токена по префиксу, а не по хешу | Хеш необратим; уникальный индекс делает поиск O(log n) | Префикс публичен и попадает в логи/UI |
-| `@ElementCollection` для скоупов вместо JSON-колонки | Нормализация, возможность индексирования и FK | Ленивая загрузка → риск `LazyInitializationException`; N+1 при `findAll()` |
+| `@ElementCollection` для скоупов вместо JSON-колонки | Нормализация, возможность индексирования и FK | Ленивая загрузка → риск `LazyInitializationException`; в репозитории закрывается `@EntityGraph` на list-запросах |
 | Ядро без Spring | Тестируемость, переносимость, отсутствие магии | Продукт обязан предоставить бин `Clock`, если нужно фиксированное время |
 | Хеширование вместо шифрования | Секрет не нужно восстанавливать | Восстановить выпущенный токен невозможно — только перевыпуск |
 | Аудит асинхронный | Не тормозит горячий путь аутентификации | Возможна потеря последних событий при жёсткой остановке |

@@ -33,6 +33,16 @@ public interface ApiTokenService {
     List<ApiToken> listAll();
 
     /**
+     * Admin: bounded page of tokens, newest first.
+     */
+    List<ApiToken> listAll(int offset, int limit);
+
+    /**
+     * Admin: total number of stored tokens.
+     */
+    long countAll();
+
+    /**
      * Admin: get token by id without ownership check.
      */
     ApiToken getAny(UUID tokenId);

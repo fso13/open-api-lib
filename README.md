@@ -13,7 +13,7 @@ Reusable **Spring Boot Starter** for API tokens (GitHub PAT-style): create/revok
 | Module | Role |
 |--------|------|
 | `openapi-tokens-core` | Domain, ports, hasher, scope resolvers, Bucket4j rate limiter, service |
-| `openapi-tokens-persistence-jpa` | JPA adapters + Flyway (`V1__api_tokens.sql`, `V2__scope_catalog.sql`) |
+| `openapi-tokens-persistence-jpa` | JPA adapters + Flyway (`V1__api_tokens.sql`, `V2__scope_catalog.sql`, `V3__hardening.sql`) |
 | `openapi-tokens-security` | Filter, AuthenticationProvider, owner resolvers, permission checker |
 | `openapi-tokens-web` | User + admin REST (`/api/openapi/tokens`, `/api/openapi/admin/tokens`, `/api/openapi/scopes`) |
 | `openapi-tokens-autoconfigure` | AutoConfiguration + `OpenApiTokensProperties` |
@@ -23,6 +23,12 @@ Reusable **Spring Boot Starter** for API tokens (GitHub PAT-style): create/revok
 | `openapi-tokens-sample-keycloak` | Sample app: Keycloak OIDC login, JWT + API tokens, same UI |
 
 ## Add dependency
+
+> **Артефакт пока не опубликован в публичном репозитории.** `maven-publish` настроен для
+> библиотечных модулей (можно публиковать в локальный или корпоративный репозиторий), но
+> `publishing.repositories` и подпись не заданы, поэтому в Maven Central/Nexus артефакта ещё
+> нет. Подключение — через `includeBuild` / локальный репозиторий. См.
+> [Ограничения и roadmap](docs/operations/roadmap.md).
 
 ```kotlin
 implementation("ru.openapi:openapi-tokens-spring-boot-starter:0.1.0-SNAPSHOT")
@@ -40,6 +46,11 @@ openapi:
         tenant-claim: tenant_id   # claim with the tenant id (owner id is always `sub`)
     scopes:
       mode: identity       # identity | mapped
+      allow-tenant-override: false   # true = trust tenantId from the request body
+      validation:
+        mode: catalog      # off | deny-list | catalog | strict
+        deny-patterns:
+          - "ROLE_.*"      # never mint a token carrying a Spring Security role
       mappings:
         payment:
           - createPayment
@@ -62,6 +73,14 @@ openapi:
       prefix-length: 8
       default-ttl: 90d
 ```
+
+> **Скоупы должны быть объявлены заранее.** При `openapi.tokens.scopes.validation.mode != off`
+> (по умолчанию `catalog`) запрошенный скоуп должен быть известен справочнику: объявлен в
+> `openapi.tokens.scopes.catalog`, в таблице `scope_catalog` (миграция `V2`) или фигурировать
+> в `scopes.mappings`. Иначе создание токена завершится `422 Unprocessable Entity` с
+> `invalidScopes`. Скоупы, попавшие под `deny-patterns` (по умолчанию `ROLE_.*`), отклоняются
+> всегда, кроме `mode: off`. Режим `strict` дополнительно запрещает делегировать права, которых
+> нет у вызывающего.
 
 ## Create token (example)
 
@@ -88,7 +107,7 @@ Use as: `Authorization: Bearer atk_abcd1234_<secret>`.
 
 ## Security snippet
 
-Starter registers `ApiTokenAuthenticationFilter` for `/api/openapi/**`. Product apps can also rely on resolved authorities with `@PreAuthorize("hasAuthority('createPayment')")`.
+Starter registers `ApiTokenAuthenticationFilter` inside the security chain for `/api/openapi/**` (it is **not** a global servlet filter: `FilterRegistrationBean` is created with `enabled = false`). Product apps can also rely on resolved authorities with `@PreAuthorize("hasAuthority('createPayment')")`.
 
 Auth modes:
 
@@ -169,10 +188,12 @@ curl -u demo:demo http://localhost:8080/api/openapi/scopes
 | [REST API](docs/api/rest-api.md) · [Java API](docs/api/java-api.md) · [Порты и SPI](docs/api/spi.md) | справочники |
 | [Тестирование](docs/operations/testing.md) · [Публикация документации](docs/operations/publishing.md) · [Ограничения и roadmap](docs/operations/roadmap.md) | эксплуатация и развитие |
 
-Ключевые известные ограничения (скоупы не валидируются → возможен `ROLE_ADMIN`;
-`tenantId` из запроса; статус `EXPIRED` не выставляется; мёртвые свойства `audit.*`,
-`rate-limit.backend`, `token.default-ttl`) собраны в
-[«Ограничения и roadmap»](docs/operations/roadmap.md).
+Ключевые известные ограничения (статус `EXPIRED` не выставляется в БД и вычисляется на лету;
+мёртвое свойство `rate-limit.backend`; отсутствие Redis-лимитера, метрик, springdoc и
+публикации в публичный репозиторий) собраны в
+[«Ограничения и roadmap»](docs/operations/roadmap.md). Закрытые в ходе security hardening
+2026-10 дефекты (валидация скоупов, квота, тенант из запроса, пагинация, оптимистичная
+блокировка) перечислены там же в разделе «Что уже исправлено».
 
 ```bash
 # локальный предпросмотр сайта документации
@@ -182,19 +203,42 @@ mkdocs serve           # http://127.0.0.1:8000
 mkdocs build --strict  # сборка в ./site
 ```
 
-Публикация: GitHub — [`.github/workflows/docs.yml`](.github/workflows/docs.yml)
+Публикация: GitHub — `.github/workflows/docs.yml`
 (Settings → Pages → Source: GitHub Actions); GitLab — job `pages` в
-[`.gitlab-ci.yml`](.gitlab-ci.yml) (артефакт `public`). Детали —
+`.gitlab-ci.yml` (артефакт `public`). Детали —
 [Публикация документации](docs/operations/publishing.md).
 
 ## Build & test
 
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-./gradlew test
+./gradlew build          # compile + tests + JaCoCo coverage gates
+./gradlew test           # tests only
 ```
 
-Coverage baseline: unit tests on hasher, scope resolvers, rate limiter, `DefaultApiTokenService`, security authenticator; Testcontainers for JPA; ApplicationContextRunner for autoconfigure enable/disable.
+`./gradlew test` requires a running **Docker** daemon: JPA/E2E tests start PostgreSQL 16 via
+Testcontainers.
+
+**225 tests** (0 failures): core 102, security 26, persistence-jpa 11, web 7, autoconfigure 13,
+sample 19, sample-ui 33, sample-keycloak 18. Coverage is enforced by JaCoCo
+(`jacocoTestCoverageVerification` is part of `check`):
+
+| Module | Line coverage gate | Measured |
+|---|---|---|
+| `openapi-tokens-core` | 78 % | 84.2 % |
+| `openapi-tokens-security` | 72 % | 76.1 % |
+| `openapi-tokens-persistence-jpa` | 85 % | 90.6 % |
+| `openapi-tokens-autoconfigure` | 62 % | 67.4 % |
+| `openapi-tokens-web` | 45 % | 50.7 % |
+
+Reports: `*/build/reports/jacoco/test/jacocoTestReport.xml|html`, test results in
+`*/build/test-results/test`.
+
+CI: GitLab job `test` in `.gitlab-ci.yml` (`eclipse-temurin:21-jdk` + `docker:dind`,
+`./gradlew build`) and GitHub Actions job `test` in `.github/workflows/build.yml`
+(`ubuntu-latest`, JDK 21, `./gradlew build`). The compiler runs with `-Xlint:all -Werror`
+and javadoc with `isFailOnError = true`, so warnings fail the build. Details —
+[Тестирование](docs/operations/testing.md).
 
 ## Disable starter
 
@@ -223,7 +267,7 @@ Users: `demo`/`demo` (USER), `admin`/`admin` (ADMIN).
 
 | Раздел | URL | Кто видит | Что умеет |
 |--------|-----|-----------|-----------|
-| Справочник скоупов | `/ui/scopes` | любой аутентифицированный | скоупы с описанием и правами (данные `GET /api/openapi/scopes`) |
+| Справочник скоупов | `/ui/scopes` | любой аутентифицированный | скоупы с описанием и правами (тот же бин `ScopeCatalog`, что отдаёт `GET /api/openapi/scopes`) |
 | Кабинет пользователя | `/ui/tokens` | любой аутентифицированный | список своих токенов, счётчики по статусам, поиск и фильтр по статусу |
 | Создание токена | `/ui/tokens/new` | любой аутентифицированный | `name`, `description`, `scopes` (чипы и описания из справочника), абсолютный срок, sliding TTL, rate limit, `tenantId` |
 | Показ секрета | `/ui/tokens/created` | владелец | raw-токен показывается один раз + кнопка «Скопировать» |

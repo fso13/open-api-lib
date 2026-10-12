@@ -18,8 +18,6 @@ dependencies {
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
 
-    testImplementation(project(":openapi-tokens-sample-ui"))
-    testImplementation(testFixtures(project(":openapi-tokens-sample-ui")))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
 }

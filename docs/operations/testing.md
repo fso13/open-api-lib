@@ -12,6 +12,15 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 ./gradlew test
 ```
 
+Полная сборка (компиляция, тесты, проверка покрытия) — одной командой:
+
+```bash
+./gradlew build
+```
+
+`build` включает `check`, а в `check` входят задачи `jacocoTestCoverageVerification`
+с порогами по строкам покрытия (см. раздел 2.1) — падение порога ломает сборку.
+
 Требования:
 
 - **JDK 21** (toolchain зафиксирован в корневом `build.gradle.kts`);
@@ -49,9 +58,10 @@ open build/reports/tests/test/index.html
 | Mockito (+ `mockito-junit-jupiter`) | 5.14.x | Моки в юнит-тестах |
 | Cucumber (`cucumber-java`, `cucumber-junit-platform-engine`) | 7.20.1 | BDD-сценарии |
 | Testcontainers (`junit-jupiter`, `postgresql`) | 1.20.4 | Интеграционные тесты с реальной БД |
-| ArchUnit (`archunit-junit5`) | 1.3.0 | Проверка архитектурных правил |
+| ArchUnit (`archunit-junit5`) | 1.3.0 | Проверка архитектурных правил (модуль `autoconfigure`) |
 | `spring-boot-starter-test`, `spring-security-test` | 3.4.1 | `@WebMvcTest`, `MockMvc`, `@WithMockUser` |
 | Spring Boot Testcontainers | 3.4.1 | Интеграция контейнеров со Spring |
+| JaCoCo (плагин Gradle) | — | Покрытие: отчёты + пороги (`check`) |
 
 Дополнительно настроено в Gradle:
 
@@ -59,29 +69,49 @@ open build/reports/tests/test/index.html
 - `environment("TESTCONTAINERS_RYUK_DISABLED", "true")` в `persistence-jpa` и `sample`;
 - `src/test/resources/testcontainers.properties`: `checks.disable=true`,
   `ryuk.container.image=testcontainers/ryuk:0.11.0`;
-- `src/test/resources/docker-java.properties`: `api.version=1.44`.
+- `src/test/resources/docker-java.properties`: `api.version=1.44`;
+- компиляция с `-Xlint:all` (кроме `-serial`, `-processing`) и `-Werror` — предупреждения
+  компилятора ломают сборку;
+- `javadoc` с `isFailOnError = true` — битые javadoc-ссылки ломают сборку;
+- `testRuntimeOnly("org.junit.platform:junit-platform-launcher")` — в Gradle 9 лаунчер
+  больше не подставляется автоматически.
 
-!!! warning "Средства контроля качества не подключены"
-    В проекте **нет** JaCoCo (измерения покрытия), Spotless/Checkstyle/PMD (стиль),
-    mutation-тестирования, блокировок зависимостей и задачи с тегами. Заявление README
-    о «coverage baseline» воспроизвести нельзя — счётчик не настроен.
+### 2.1. Покрытие (JaCoCo)
+
+Для каждого модуля выполняется `jacocoTestReport` (XML + HTML), а для модулей с порогом —
+`jacocoTestCoverageVerification`:
+
+| Модуль | Порог по строкам | Фактическое покрытие |
+|---|---|---|
+| `openapi-tokens-core` | 78 % | 84.2 % |
+| `openapi-tokens-security` | 72 % | 76.1 % |
+| `openapi-tokens-persistence-jpa` | 85 % | 90.6 % |
+| `openapi-tokens-autoconfigure` | 62 % | 67.4 % |
+| `openapi-tokens-web` | 45 % | 50.7 % |
+
+Отчёты: `*/build/reports/jacoco/test/jacocoTestReport.xml` и
+`*/build/reports/jacoco/test/html/index.html`.
+
+!!! warning "Средства контроля качества подключены не полностью"
+    JaCoCo и строгие компилятор/javadoc-настройки **есть**. Пока **нет** Spotless/Checkstyle/PMD
+    (стиль), mutation-тестирования и dependency locking (фиксация версий).
 
 ---
 
 ## 3. Инвентаризация тестов
 
-Последний зафиксированный прогон: **158 тестов, 0 падений** (артефакты
+Последний зафиксированный прогон: **229 тестов, 0 падений** (артефакты
 `*/build/test-results/test`).
 
 | Модуль | Тестов | Что проверяется |
 |---|---|---|
-| `openapi-tokens-core` | 71 | Домен и инварианты, формат/генерация токена, TTL, хешеры, лимитер, резолверы скоупов, справочник, асинхронный аудит, сервис жизненного цикла, Cucumber-сценарии |
-| `openapi-tokens-security` | 11 | Порядок проверок в аутентификаторе (статус → TTL → хеш → лимит → скоупы), резолвер владельца Keycloak (JWT, OIDC, кастомный claim) |
-| `openapi-tokens-web` | 7 | Создание/список/отзыв/статистика токенов, блокировка, справочник скоупов (standalone `MockMvc`) |
-| `openapi-tokens-autoconfigure` | 4 | Включение/выключение статера, наличие бинов, каталог скоупов из конфигурации |
-| `openapi-tokens-persistence-jpa` | 6 | JPA-адаптеры на PostgreSQL (Testcontainers) + ArchUnit |
-| `openapi-tokens-sample` | 10 | E2E-сценарий (создание токена + вызов защищённого API) и контроль доступа UI |
-| `openapi-tokens-sample-ui` | 31 | Срезы контроллеров UI: список/фильтры/карточки/действия/валидация/CSRF |
+| `openapi-tokens-core` | 102 | Домен и инварианты, формат/генерация токена, TTL, хешеры, лимитер (включая LRU-эвикцию и политику лимитов), резолверы и **валидаторы скоупов**, справочник, асинхронный аудит, сервис жизненного цикла, Cucumber-сценарии |
+| `openapi-tokens-security` | 26 | **Фильтр аутентификации** (пропуск, 401/429 `problem+json`, `SecurityContext`, аудит), порядок проверок в аутентификаторе (статус → TTL → хеш → лимит → скоупы), резолвер владельца Keycloak, резолвер authority вызывающего |
+| `openapi-tokens-web` | 7 | Создание/список/отзыв/статистика токенов, блокировка, справочник скоупов (standalone `MockMvc` с `ApiTokenExceptionHandler`) |
+| `openapi-tokens-autoconfigure` | 13 | Включение/выключение статера, наличие бинов, каталог и **валидация скоупов из конфигурации**, режимы `off`/`catalog`/`strict`, маппинг optimistic lock → 409, ArchUnit (4 правила) |
+| `openapi-tokens-persistence-jpa` | 11 | JPA-адаптеры на PostgreSQL (Testcontainers): `@Version`, пагинация, обрезка длинных значений аудита |
+| `openapi-tokens-sample` | 19 | E2E (`@SpringBootTest` + Testcontainers): выпуск токена и вызов защищённого API; **security hardening** (`TokenSecurityIT`: отказ по `ROLE_*`/неизвестному скоупу → 422, чужой тенант → 403, админка только для `ROLE_ADMIN`, 401 как `problem+json`); контроль доступа UI |
+| `openapi-tokens-sample-ui` | 33 | Срезы контроллеров UI: список/фильтры/карточки/действия/валидация/CSRF, статические ресурсы |
 | `openapi-tokens-sample-keycloak` | 18 | Keycloak JWT → владелец из `sub` и роли → `ROLE_*`, доступ по скоупу API-токена, админка по `ROLE_ADMIN`, редирект на Keycloak, конвертеры ролей/claim'ов (`SecurityMockMvcRequestPostProcessors.jwt()`, без живого Keycloak) |
 | `openapi-tokens-spring-boot-starter` | 0 | Тестов нет |
 
@@ -106,58 +136,58 @@ glue-пакеты `ru.openapi.tokens.token.scope` и `ru.openapi.tokens.token.se
 | Тип | Где | Особенности |
 |---|---|---|
 | Юнит (без Spring) | `core`, `security` | Mockito + AssertJ, управляемое время через `MutableClock implements TimeMeter` |
-| Срез MVC | `web` (standalone `MockMvc`), `sample`/`sample-ui` (`@WebMvcTest` + `@MockitoBean`) | Контракты JSON, view-модели, CSRF, контроль доступа |
-| Срез JPA | `persistence-jpa` (`@DataJpaTest` + Testcontainers) | Реальная схема после Flyway, `ddl-auto=validate` |
-| Архитектура | `persistence-jpa` (ArchUnit) | Изоляция `dto` ↔ `@Entity` |
-| Контекст | `autoconfigure` (`ApplicationContextRunner`) | Условия `@ConditionalOnProperty`, наличие/отсутствие бинов |
-| E2E | `sample` (`@SpringBootTest` + Testcontainers) | Happy path: выпуск токена и обращение к API |
+| Срез MVC | `web` (standalone `MockMvc` + advice), `sample`/`sample-ui` (`@WebMvcTest` + `@MockitoBean`) | Контракты JSON, `ProblemDetail`, view-модели, CSRF, контроль доступа |
+| Срез JPA | `persistence-jpa` (`@Testcontainers`) | Реальная схема после Flyway (`V1`–`V3`), `ddl-auto=validate` |
+| Архитектура | `autoconfigure` (ArchUnit) | Изоляция `dto` ↔ `@Entity`, ядро без Spring/JPA/Servlet, internals персистентности |
+| Контекст | `autoconfigure` (`ApplicationContextRunner`) | Условия `@ConditionalOnProperty`, наличие/отсутствие бинов, выбор `ScopeValidator` |
+| E2E | `sample` (`@SpringBootTest` + Testcontainers) | Полный путь: выпуск токена, вызов API, отказы безопасности, 401/403/422 |
 
 ---
 
 ## 4. Пробелы в покрытии
 
-!!! warning "Перечисленное ниже не проверяется ни одним тестом"
-    **Безопасность (наибольший риск):**
+!!! warning "Перечисленное ниже не проверяется или проверено частично"
+    **Ранее непокрытое, теперь закрытое:**
 
-    1. `ApiTokenAuthenticationFilter` — нет тестов вообще: ответы 401/429, пропуск запроса
-       без Bearer-заголовка, установка `SecurityContext`, записи аудита.
-    2. `ApiTokenAuthenticationProvider` — `BadCredentialsException`, неверный формат, реthrow лимита.
-    3. `ApiTokenAuthentication` — principal/credentials, фабрики, набор authority.
-    4. `ApiTokenPermissionEvaluator` — оба `hasPermission`, `hasAnyAuthority`, анонимный случай.
-    5. `InternalTokenOwnerResolver` — все ветки (владелец из токена, `UserDetails`, `String`, отсутствие аутентификации).
-    6. Готовая цепочка `openapiTokensSecurityFilterChain` — не загружается ни в одном тесте:
-       ни `hasRole("ADMIN")`, ни отключение CSRF, ни порядок фильтров.
-    7. Нет ни одного HTTP-теста на 401 при неверном токене, 403 для не-админа и 429 на уровне HTTP.
+    - `ApiTokenAuthenticationFilter` — покрыт `ApiTokenAuthenticationFilterTest` (401/429,
+      пропуск запроса, `SecurityContext`, аудит);
+    - порядок проверок аутентификатора — покрыт `DefaultApiTokenAuthenticatorTest`;
+    - валидаторы скоупов — покрыты `ScopeValidatorTest` и `OpenApiTokensAutoConfigurationTest`;
+    - готовая цепочка безопасности — покрыта e2e `TokenSecurityIT` (401/403, админка);
+    - резолвер authority вызывающего — `SecurityContextCallerAuthorityResolverTest`.
 
-    **Web:**
+    **Остаётся без полного покрытия:**
 
-    8. `ApiTokenExceptionHandler` — все четыре маппинга (404/409/400/400) не проверяются,
-       ни один тест не проверяет тело `ProblemDetail`.
-    9. `AdminApiTokenController` — не покрыты `GET /`, `GET /{id}`, `GET /{id}/audit`, `DELETE`, `unblock`.
-    10. `UserApiTokenController` — не покрыты `GET /{id}`, `GET /{id}/audit`, ошибки валидации,
-        заголовок `Location`, проброс `tenantId`/`slidingTtlSeconds`/лимитов.
-    11. `ApiTokenWebMapper` — нет юнит-тестов преобразований.
+    **Безопасность:**
 
-    **Конфигурация:**
+    1. `ApiTokenAuthenticationProvider` — покрыт лишь косвенно (через фильтр и e2e), прямых
+       юнит-тестов на `BadCredentialsException`, неверный формат и rethrow лимита нет.
+    2. `ApiTokenAuthentication` — набор authority и principal/credentials проверяются только
+       через фильтр.
+    3. `ApiTokenPermissionEvaluator` — оба `hasPermission`, `hasAnyAuthority`, анонимный случай.
+    4. `InternalTokenOwnerResolver` — все ветки (владелец из токена, `UserDetails`, `String`,
+       отсутствие аутентификации).
 
-    12. `OpenApiTokensPersistenceAutoConfiguration` — условия `@ConditionalOnBean(DataSource)`,
-        `@ConditionalOnClass(EntityManager)` не проверяются.
-    13. Валидация `OpenApiTokensProperties` (`@Min`, `@NotBlank`) — не проверяется.
-    14. Не покрыты ветки: `auth.mode=keycloak`, `scopes.mode=mapped`, `hashing.algorithm=bcrypt`
-        через контекст, кастомные `token.header`/`bearer-prefix`, переопределение бинов.
-    15. `TransactionalApiTokenService` — границы транзакций не проверяются.
+    **Web и конфигурация:**
 
-    **Прочее:**
+    5. `ApiTokenWebMapper` — юнит-тестов преобразований нет (проверяется косвенно).
+    6. `TransactionalApiTokenService` — границы транзакций не проверяются.
+    7. Валидация `OpenApiTokensProperties` (`@Min`, `@NotBlank`) и ветки
+       `auth.mode=keycloak`, `scopes.mode=mapped`, `hashing.algorithm=bcrypt` в
+       `ApplicationContextRunner`, кастомные `token.header`/`bearer-prefix` — не покрыты
+       (косвенно `auth.mode=keycloak` проверяется тестами семпла Keycloak).
+    8. Модуль `spring-boot-starter` — тестов нет; `AutoConfiguration.imports` не проверяется.
 
-    16. Модуль `spring-boot-starter` — тестов нет; файл `AutoConfiguration.imports` не проверяется.
-    17. `openapi-tokens-web` содержит неиспользуемые зависимости Cucumber (`cucumber-java`,
-        `cucumber-junit-platform-engine`, `cucumber-spring`) без feature-файлов.
-    18. Нет измерения покрытия — нет и «порога», ниже которого сборка падает.
-    19. Мультитенантность проверяется только на уровне claim: фильтрация `scope_mapping`
-        по тенанту — на одном тенанте, фильтрации токенов по тенанту нет вовсе.
-    20. Нет проверок энтропии токена, коллизий префикса и стойкости параметров хеширования.
-    21. `ApiTokenRepository#findAll`, пагинация аудита, `usageStats` по отказам,
-        `deleteByScope` для отсутствующего скоупа — не покрыты.
+    **Инфраструктура и НФТ:**
+
+    9. **Redis-лимитер** — реализации не существует, тестировать нечего.
+    10. **springdoc/OpenAPI** (`/v3/api-docs`) — не подключён.
+    11. Мультитенантность: фильтрация `scope_mapping` по тенанту — на одном тенанте,
+        фильтрации токенов по тенанту нет.
+    12. Нет проверок энтропии токена, коллизий префикса и стойкости параметров хеширования.
+    13. `ApiTokenRepository#findAll`, `usageStats` по отказам, `deleteByScope` для
+        отсутствующего скоупа — не покрыты.
+    14. Ротация/партиционирование журнала аудита — не реализованы, значит и не тестируются.
 
 ---
 
@@ -225,23 +255,28 @@ class MyControllerTest {
 
 | Приоритет | Что добавить | Зачем |
 |---|---|---|
-| 🔴 Высокий | Тесты фильтра аутентификации (401/429, пропуск, аудит) | Это горячий путь безопасности, полностью непокрытый |
-| 🔴 Высокий | HTTP-тесты готовой цепочки безопасности (401/403/429) | Проверить реальные правила доступа |
-| 🔴 Высокий | Тесты `ApiTokenExceptionHandler` (тела `ProblemDetail`) | Зафиксировать контракт ошибок |
+| 🔴 Высокий | Прямые тесты `ApiTokenAuthenticationProvider` и `ApiTokenPermissionEvaluator` | Частично непокрытый горячий путь безопасности |
+| 🔴 Высокий | Прямые тесты `InternalTokenOwnerResolver` | Разные типы principal в проде |
 | 🟠 Средний | Валидация свойств и ветки автоконфигурации (`keycloak`, `mapped`, `bcrypt`) | Защита от регрессий конфигурации |
 | 🟠 Средний | BDD для REST- и UI-потоков | Требование правил проекта; сейчас только 3 feature-файла |
-| 🟡 Низкий | JaCoCo + порог покрытия | Измеримость |
+| 🟠 Средний | Тесты транзакционных границ `TransactionalApiTokenService` | Консистентность при ошибках |
 | 🟡 Низкий | Тесты мультитенантности (фильтрация по `tenant_id`) | Требуется при мультитенантном продукте |
-| 🟡 Низкий | Удалить неиспользуемые Cucumber-зависимости из `web` или добавить там feature-файлы | Чистота сборки |
+| 🟡 Низкий | Проверки энтропии/коллизий и параметров хеширования | Стойкость секретов |
 
 ---
 
 ## 7. Тестирование в CI
 
-Для CI-пайплайна достаточно:
+Настроены два пайплайна:
+
+- **GitLab CI** — job `test` в `.gitlab-ci.yml`: образ
+  `eclipse-temurin:21-jdk`, сервис `docker:dind`, `./gradlew --no-daemon build`
+  (`build` включает пороги JaCoCo), артефакты — JUnit XML и отчёты JaCoCo;
+- **GitHub Actions** — job `test` в `.github/workflows/build.yml`: `ubuntu-latest` с уже
+  доступным Docker, JDK 21 (temurin), `./gradlew --no-daemon build`, выгрузка отчётов.
 
 ```yaml
-# пример (GitLab CI)
+# эквивалент для GitLab CI
 test:
   image: eclipse-temurin:21-jdk
   services:
@@ -249,11 +284,13 @@ test:
   variables:
     TESTCONTAINERS_RYUK_DISABLED: "true"
   script:
-    - ./gradlew test --no-daemon
+    - ./gradlew build --no-daemon
   artifacts:
     when: always
     reports:
       junit: "*/build/test-results/test/*.xml"
+    paths:
+      - "*/build/reports/jacoco"
 ```
 
 Учтите: `TESTCONTAINERS_RYUK_DISABLED=true` отключает «сборщик мусора» контейнеров,

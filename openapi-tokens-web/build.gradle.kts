@@ -4,7 +4,8 @@ plugins {
 
 dependencies {
     api(project(":openapi-tokens-core"))
-    implementation(project(":openapi-tokens-security"))
+    // Validation annotations are part of the public DTO/controller signatures.
+    api("jakarta.validation:jakarta.validation-api")
 
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-validation")
@@ -12,8 +13,4 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.security:spring-security-test")
-    testImplementation("io.cucumber:cucumber-java:7.20.1")
-    testImplementation("io.cucumber:cucumber-junit-platform-engine:7.20.1")
-    testImplementation("io.cucumber:cucumber-spring:7.20.1")
-    testImplementation("org.junit.platform:junit-platform-suite")
 }

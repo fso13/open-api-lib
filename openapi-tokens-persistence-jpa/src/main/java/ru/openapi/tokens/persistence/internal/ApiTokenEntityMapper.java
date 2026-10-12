@@ -15,6 +15,7 @@ public class ApiTokenEntityMapper {
     public ApiTokenEntity toEntity(ApiToken domain) {
         final ApiTokenEntity entity = new ApiTokenEntity();
         entity.setId(domain.id());
+        entity.setVersion(domain.version());
         entity.setPrefix(domain.credentials().prefix());
         entity.setTokenHash(domain.credentials().tokenHash());
         entity.setName(domain.name());
@@ -42,6 +43,7 @@ public class ApiTokenEntityMapper {
                 .withCreatedAt(entity.getCreatedAt());
         return ApiToken.builder()
                 .id(entity.getId())
+                .version(entity.getVersion())
                 .name(entity.getName())
                 .description(entity.getDescription())
                 .credentials(new TokenCredentials(entity.getPrefix(), entity.getTokenHash()))

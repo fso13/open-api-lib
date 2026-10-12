@@ -10,6 +10,7 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import ru.openapi.tokens.token.TokenStatus;
 
 import java.time.Instant;
@@ -24,6 +25,14 @@ public class ApiTokenEntity {
     @Id
     @Column(name = "id", nullable = false)
     private UUID id;
+
+    /**
+     * Optimistic locking. A {@code null} version also tells Spring Data that the entity is new, so
+     * creation goes through {@code persist} instead of a {@code select}+{@code merge} probe.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 
     @Column(name = "prefix", nullable = false, length = 16, unique = true)
     private String prefix;
@@ -82,6 +91,14 @@ public class ApiTokenEntity {
 
     void setId(UUID id) {
         this.id = id;
+    }
+
+    Long getVersion() {
+        return version;
+    }
+
+    void setVersion(Long version) {
+        this.version = version;
     }
 
     String getPrefix() {

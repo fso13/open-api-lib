@@ -28,6 +28,10 @@ public final class ApiToken {
     private final Instant createdAt;
     private final Instant revokedAt;
     private final String createdBy;
+    /**
+     * Optimistic locking version ({@code null} for a token that has not been persisted yet).
+     */
+    private final Long version;
 
     private ApiToken(Builder builder) {
         this.id = Objects.requireNonNull(builder.id, "id");
@@ -45,6 +49,7 @@ public final class ApiToken {
         this.createdAt = Objects.requireNonNull(builder.createdAt, "createdAt");
         this.revokedAt = builder.revokedAt;
         this.createdBy = builder.createdBy;
+        this.version = builder.version;
     }
 
     public static Builder builder() {
@@ -89,6 +94,18 @@ public final class ApiToken {
         return status == TokenStatus.ACTIVE;
     }
 
+    /**
+     * Status as seen by a caller: a stored {@code ACTIVE} token past its expiry is reported as
+     * {@code EXPIRED} without a background job having to rewrite the row.
+     */
+    public TokenStatus effectiveStatus(Instant now) {
+        Objects.requireNonNull(now, "now");
+        if (status != TokenStatus.ACTIVE) {
+            return status;
+        }
+        return expiry.isExpiredAt(now) ? TokenStatus.EXPIRED : TokenStatus.ACTIVE;
+    }
+
     public Builder toBuilder() {
         return new Builder()
                 .id(id)
@@ -103,7 +120,8 @@ public final class ApiToken {
                 .rateLimit(rateLimit)
                 .createdAt(createdAt)
                 .revokedAt(revokedAt)
-                .createdBy(createdBy);
+                .createdBy(createdBy)
+                .version(version);
     }
 
     public UUID id() {
@@ -158,6 +176,13 @@ public final class ApiToken {
         return createdBy;
     }
 
+    /**
+     * Optimistic locking version, {@code null} until the token is persisted.
+     */
+    public Long version() {
+        return version;
+    }
+
     private static Set<String> normalizeScopes(Set<String> scopes) {
         if (scopes == null || scopes.isEmpty()) {
             throw new EmptyScopesException();
@@ -194,6 +219,7 @@ public final class ApiToken {
         private Instant createdAt;
         private Instant revokedAt;
         private String createdBy;
+        private Long version;
 
         private Builder() {
         }
@@ -260,6 +286,11 @@ public final class ApiToken {
 
         public Builder createdBy(String createdBy) {
             this.createdBy = createdBy;
+            return this;
+        }
+
+        public Builder version(Long version) {
+            this.version = version;
             return this;
         }
 

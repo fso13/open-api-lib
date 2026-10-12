@@ -57,14 +57,22 @@ public final class TokenExpiry {
 
     public boolean isExpired(Clock clock) {
         Objects.requireNonNull(clock, "clock");
-        final Instant now = clock.instant();
+        return isExpiredAt(clock.instant());
+    }
+
+    /**
+     * Expiry check against an explicit instant (no clock dependency).
+     */
+    public boolean isExpiredAt(Instant now) {
+        Objects.requireNonNull(now, "now");
         if (expiresAt != null && !now.isBefore(expiresAt)) {
             return true;
         }
         if (slidingTtl != null) {
             final Instant anchor = lastUsedAt != null ? lastUsedAt : createdAt;
             if (anchor == null) {
-                return false;
+                // No anchor to count from: fail closed instead of treating the token as eternal.
+                return true;
             }
             return !now.isBefore(anchor.plus(slidingTtl));
         }

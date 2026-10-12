@@ -54,9 +54,12 @@ public final class DefaultScopeCatalog implements ScopeCatalog {
         final Set<String> scopes = new TreeSet<>(descriptions.keySet());
         scopes.addAll(mappingSource.knownTokenScopes());
 
+        // One batched lookup instead of one query per scope.
+        final Map<String, Set<String>> projectScopes = mappingSource.projectScopesFor(scopes, null);
+
         final List<ScopeInfo> result = new ArrayList<>(scopes.size());
         for (String scope : scopes) {
-            result.add(new ScopeInfo(scope, descriptions.get(scope), mappingSource.projectScopesFor(scope, null)));
+            result.add(new ScopeInfo(scope, descriptions.get(scope), projectScopes.getOrDefault(scope, Set.of())));
         }
         return Collections.unmodifiableList(result);
     }

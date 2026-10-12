@@ -9,8 +9,10 @@ import org.springframework.web.servlet.FlashMap;
 import org.springframework.web.servlet.support.RequestContextUtils;
 import ru.openapi.tokens.token.exception.ApiTokenNotFoundException;
 import ru.openapi.tokens.token.exception.EmptyScopesException;
+import ru.openapi.tokens.token.exception.InvalidScopeException;
 import ru.openapi.tokens.token.exception.InvalidTokenStateException;
 import ru.openapi.tokens.token.exception.QuotaExceededException;
+import ru.openapi.tokens.token.exception.TenantNotAllowedException;
 
 /**
  * Turns domain exceptions raised while rendering UI pages into friendly redirects with a Russian
@@ -49,6 +51,19 @@ public class UiExceptionAdvice {
     @ExceptionHandler(IllegalArgumentException.class)
     public String handleBadRequest(IllegalArgumentException ex, HttpServletRequest request) {
         return redirectWithError(request, listPath(request), "Некорректный запрос: " + ex.getMessage());
+    }
+
+    @ExceptionHandler(InvalidScopeException.class)
+    public String handleInvalidScopes(InvalidScopeException ex, HttpServletRequest request) {
+        return redirectWithError(request, "/ui/tokens/new",
+                "Недопустимые скоупы: %s (%s)".formatted(
+                        String.join(", ", ex.getInvalidScopes()), ex.getReason()));
+    }
+
+    @ExceptionHandler(TenantNotAllowedException.class)
+    public String handleTenantNotAllowed(TenantNotAllowedException ex, HttpServletRequest request) {
+        return redirectWithError(request, "/ui/tokens/new",
+                "Создание токена для другого тенанта запрещено");
     }
 
     private static String listPath(HttpServletRequest request) {

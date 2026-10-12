@@ -1,19 +1,26 @@
 package ru.openapi.tokens.web;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import ru.openapi.tokens.token.command.RevokeTokenCommand;
+import ru.openapi.tokens.token.exception.InvalidTokenStateException;
 import ru.openapi.tokens.token.spi.ApiTokenService;
 import ru.openapi.tokens.token.spi.AuditLogRepository;
 import ru.openapi.tokens.web.dto.ApiTokenResponse;
+import ru.openapi.tokens.web.dto.AuditEventResponse;
 import ru.openapi.tokens.web.dto.CreateTokenRequest;
 import ru.openapi.tokens.web.dto.CreatedTokenResponse;
 import ru.openapi.tokens.web.dto.TokenUsageStatsResponse;
@@ -23,7 +30,10 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/openapi/tokens")
+@Validated
 public class UserApiTokenController {
+
+    private static final int MAX_AUDIT_PAGE_SIZE = 500;
 
     private final ApiTokenService apiTokenService;
     private final ApiTokenWebMapper mapper;
@@ -46,7 +56,10 @@ public class UserApiTokenController {
                 .path("/{id}")
                 .buildAndExpand(created.token().id())
                 .toUri();
-        return ResponseEntity.created(location).body(mapper.toCreatedResponse(created));
+        return ResponseEntity.created(location)
+                // The response contains the raw secret once — it must never be cached.
+                .cacheControl(CacheControl.noStore())
+                .body(mapper.toCreatedResponse(created));
     }
 
     @GetMapping
@@ -61,7 +74,12 @@ public class UserApiTokenController {
 
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> revoke(@PathVariable UUID id) {
-        apiTokenService.revoke(new RevokeTokenCommand(id));
+        try {
+            apiTokenService.revoke(new RevokeTokenCommand(id));
+        } catch (InvalidTokenStateException ex) {
+            // Already revoked: DELETE stays idempotent for client retries.
+            return ResponseEntity.noContent().build();
+        }
         return ResponseEntity.noContent().build();
     }
 
@@ -71,8 +89,12 @@ public class UserApiTokenController {
     }
 
     @GetMapping("/{id}/audit")
-    public List<?> audit(@PathVariable UUID id) {
+    public List<AuditEventResponse> audit(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "0") @Min(0) int offset,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(MAX_AUDIT_PAGE_SIZE) int limit
+    ) {
         apiTokenService.get(id);
-        return auditLogRepository.findByTokenId(id, 0, 50);
+        return mapper.toAuditResponses(auditLogRepository.findByTokenId(id, offset, limit));
     }
 }

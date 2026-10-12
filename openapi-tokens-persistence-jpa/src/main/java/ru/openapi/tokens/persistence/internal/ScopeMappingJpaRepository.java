@@ -6,6 +6,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface ScopeMappingJpaRepository extends JpaRepository<ScopeMappingEntity, UUID> {
@@ -19,4 +20,13 @@ public interface ScopeMappingJpaRepository extends JpaRepository<ScopeMappingEnt
             @Param("tokenScopes") Collection<String> tokenScopes,
             @Param("tenantId") String tenantId
     );
+
+    /**
+     * Natural key lookup used to upsert instead of inserting logical duplicates.
+     */
+    Optional<ScopeMappingEntity> findByTokenScopeAndProjectScopeAndTenantId(
+            String tokenScope, String projectScope, String tenantId);
+
+    Optional<ScopeMappingEntity> findByTokenScopeAndProjectScopeAndTenantIdIsNull(
+            String tokenScope, String projectScope);
 }

@@ -45,11 +45,18 @@ openapi:
         tenant-claim: tenant_id
     scopes:
       mode: identity
+      # Валидация скоупов: catalog — скоуп обязан быть объявлен ниже (или в таблице scope_catalog),
+      # deny-patterns по умолчанию запрещает выпуск authority вида ROLE_*.
+      # Для «мощных» скоупов (например admin:all) включите mode: strict — тогда пользователь
+      # не сможет делегировать authority, которых нет у него самого. Учтите: в этом семпле
+      # Keycloak-роли приходят как ROLE_*, а scope claim — как SCOPE_*, поэтому для strict нужен
+      # свой CallerAuthorityResolver, приводящий authority к пространству имён скоупов токена.
+      validation:
+        mode: catalog
       catalog:
         "[payments:read]": "Чтение платежей — открывает GET /api/demo/payments (API-токен)"
         "[payments:write]": "Изменение платежей"
         "[reports:read]": "Чтение отчётов"
-        "[admin:all]": "Полный доступ — выдаётся только администраторам"
     hashing:
       algorithm: argon2
     limits:

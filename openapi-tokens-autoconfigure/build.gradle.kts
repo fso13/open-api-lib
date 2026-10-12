@@ -4,6 +4,9 @@ plugins {
 
 dependencies {
     api(project(":openapi-tokens-core"))
+    // The configuration properties class carries Jakarta Validation constraints.
+    api("jakarta.validation:jakarta.validation-api")
+
     implementation(project(":openapi-tokens-persistence-jpa"))
     implementation(project(":openapi-tokens-security"))
     implementation(project(":openapi-tokens-web"))
@@ -21,4 +24,5 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-starter-data-jpa")
     testImplementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0")
 }

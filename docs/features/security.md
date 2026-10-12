@@ -55,11 +55,30 @@ openapi:
     Параметры (3 итерации, 64 МиБ памяти) подобраны для **редких** операций. Хеш проверяется
     при каждом запросе с Bearer-токеном, поэтому под высокой нагрузкой (тысячи RPS)
     CPU и память станут узким местом. Варианты: кешировать результат аутентификации,
-    снизить параметры своим бином `TokenHasher` или перейти на BCrypt.
-    Алгоритм нельзя менять «на лету»: хеши, созданные другим алгоритмом, перестанут проверяться.
+    снизить параметры своим бином `TokenHasher` или перейти на BCrypt. От перебора
+    «наугад» защищает пре-аутентификационное троттлинг-ограничение
+    (`openapi.tokens.auth.failed-attempt-limit`) — оно срабатывает **до** вычисления
+    Argon2, см. [Rate limiting](rate-limiting.md#пре-аутентификационное-ограничение).
 
-Хеш-строка имеет формат, специфичный для библиотеки-провайдера (Argon2 — `$argon2id$v=19$…`,
-BCrypt — `$2a$12$…`), и хранится в `VARCHAR(255)`.
+Хеши хранятся **с тегом алгоритма**:
+
+| Формат | Когда появляется | Как проверяется |
+|---|---|---|
+| `{argon2}$argon2id$v=19$…` | новые хеши при `hashing.algorithm: argon2` | по тегу, хешером Argon2 |
+| `{bcrypt}$2a$12$…` | новые хеши при `hashing.algorithm: bcrypt` | по тегу, хешером BCrypt |
+| `$argon2…` / `$2a$…` (без тега) | хеши, созданные до харденинга | алгоритм определяется по «родному» префиксу |
+
+Тег добавляет `TokenHasherFactory.createTagged(algorithm)` (бин `TokenHasher` в
+автоконфигурации). Благодаря тегу **смена `openapi.tokens.hashing.algorithm` больше не
+инвалидирует уже выпущенные токены**: новый алгоритм применяется только к новым хешам,
+а старые продолжают проверяться тем алгоритмом, которым были созданы. Колонка
+`token_hash` — `VARCHAR(255)`, тег добавляет к строке несколько символов.
+
+!!! note "Алгоритм из конфигурации — «по умолчанию», а не «только он»"
+    `hashing.algorithm` определяет алгоритм **новых** хешей. Замена бина `TokenHasher`
+    на «сырой» (например, `Argon2TokenHasher`) убирает тег: новые хеши будут без тега,
+    а уже записанные тегированные (`{argon2}…`) перестанут проверяться. Меняйте алгоритм
+    только через свойство, не подменяя тегированный хешер.
 
 ---
 
@@ -73,9 +92,9 @@ sequenceDiagram
     participant AM as ProviderManager
     participant P as ApiTokenAuthenticationProvider
     participant A as DefaultApiTokenAuthenticator
+    participant RL as RateLimiter
     participant DB as ApiTokenRepository
     participant H as TokenHasher
-    participant RL as RateLimiter
     participant SR as ScopeResolver
     participant AR as AuditRecorder
 
@@ -84,16 +103,21 @@ sequenceDiagram
     F->>AM: authenticate(ApiTokenAuthentication.unauthenticated(raw))
     AM->>P: authenticate(...)
     P->>A: authenticate(RawToken.parse(raw))
+    A->>RL: tryAcquire("auth-fail:<prefix>", failedAttemptPolicy)
+    Note over A,RL: троттлинг ДО Argon2; 0 = выключен
     A->>DB: findByPrefix(prefix)
     A->>A: status ACTIVE? TTL не истёк?
     A->>H: matches(secret, tokenHash)
     A->>RL: tryAcquire(tokenId, policy)
     A->>SR: resolve(scopes, tenantId)
-    A->>DB: touchLastUsed + reload
+    A->>A: authorities пусты? → 401 (reject-empty-authorities)
+    A->>DB: targeted UPDATE last_used_at WHERE status='ACTIVE'
     A-->>P: AuthenticatedToken(token, authorities)
     P-->>F: ApiTokenAuthentication(authenticated)
-    F->>AR: record(AuditEvent AUTHENTICATE, success)
-    F->>C: запрос уходит дальше по цепочке
+    F->>F: SecurityContextHolder.setAuthentication(...)
+    F->>C: filterChain.doFilter — запрос уходит дальше
+    F->>AR: record(AUTHENTICATE, success, response.getStatus())
+    Note over F,AR: событие пишется ПОСЛЕ обработки, поэтому статус настоящий
 ```
 
 Особенности реализации, которые важно знать:
@@ -101,15 +125,25 @@ sequenceDiagram
 - **Фильтр не является точкой входа (`AuthenticationEntryPoint`)** — он только пытается
   аутентифицировать запрос и, если Bearer-токена нет или он не в формате `atk_`, просто
   пропускает запрос дальше, давая шанс другим механизмам (Basic, сессия, Keycloak).
-- При ошибке аутентификации фильтр сам пишет ответ: **401** с телом `Unauthorized`;
-  при превышении лимита — **429** с телом `Rate limit exceeded`. Ответ формируется
-  через `response.sendError`, поэтому тело — стандартная страница ошибки контейнера.
+- **Фильтр не регистрируется глобальным сервлет-фильтром.** Автоконфигурация создаёт
+  `FilterRegistrationBean` с `enabled=false`, поэтому `ApiTokenAuthenticationFilter`
+  работает только там, куда его явно добавили цепочки безопасности (цепочка статера или
+  ваша). Раньше Spring Boot регистрировал его ещё и на `/*`.
+- Ошибки фильтр рендерит сам, в формате `application/problem+json`, а не через
+  `response.sendError`:
+  - **401** + `WWW-Authenticate: Bearer`, тело `{"status":401,"title":"Unauthorized","detail":"Unauthorized"}`;
+  - **429** + `Retry-After: <секунды>`, тело `{"status":429,"title":"Too Many Requests","detail":"Rate limit exceeded"}`.
 - **Локальный `AuthenticationManager`**: комментарий в автоконфигурации поясняет, что
   `ApiTokenAuthenticationProvider` не регистрируется как бин специально, чтобы не подменить
   глобальный `DaoAuthenticationProvider` и не сломать form-login/httpBasic. Провайдер живёт
   внутри `ProviderManager`, созданного только для фильтра.
 - Аутентификация проходит **только** если заголовок начинается с `Bearer ` (значение
   `bearer-prefix`) и сырое значение начинается с `atk_`.
+- **Токен без authority не аутентифицируется.** Если `ScopeResolver` вернул пустой набор
+  (например, в `mapped`-режиме нет ни одного маппинга), при
+  `openapi.tokens.auth.reject-empty-authorities=true` (по умолчанию) аутентификация
+  отклоняется с 401. `false` возвращает легаси-поведение: токен аутентифицируется и просто
+  не имеет прав.
 
 ### Что происходит с `Authentication`
 
@@ -139,11 +173,17 @@ openapi:
 
 `InternalTokenOwnerResolver` — по порядку:
 
-1. если аутентификация — `ApiTokenAuthentication`, владелец берётся из самого токена
-   (`ownerId`, `tenantId`) — это позволяет управлять токенами, используя другой токен;
+1. если аутентификация — `ApiTokenAuthentication` и в ней есть доменный токен, владелец
+   берётся из самого токена (`ownerId`, `tenantId`) — это позволяет управлять токенами,
+   используя другой токен;
 2. `UserDetails#getUsername()` в качестве `ownerId`;
-3. `String`-principal;
+3. `String`-principal (непустой);
 4. `Authentication#getName()`.
+
+Анонимная аутентификация (`AnonymousAuthenticationToken`) явно **отвергается**
+(`IllegalStateException`), как и отсутствие/неаутентифицированный `Authentication`.
+Раньше анонимный запрос мог «превратиться» во владельца `anonymousUser` и выпустить
+токен от его имени.
 
 `tenantId` в этом режиме всегда `null` (кроме случая с `ApiTokenAuthentication`).
 
@@ -181,12 +221,16 @@ principal. Режим `keycloak` требует наличия `spring-security-
     Готовый разбор с кодом, realm-конфигурацией и тремя цепочками безопасности —
     [Keycloak: интеграция](../guides/keycloak.md).
 
-!!! note "Тенант из запроса не проверяется"
-    При создании токена `tenantId` берётся из запроса, если он там есть
-    (`command.tenantId() != null ? command.tenantId() : owner.tenantId()`), без сверки
-    с тенантом владельца. В мультитенантном контуре это позволяет записать токен
-    «в чужой тенант». Закройте это на уровне продукта: убирайте поле из запроса или
-    перезаписывайте его значением из security context.
+!!! note "Тенант из запроса проверяется (fail-closed)"
+    При создании токена `tenantId` из запроса сверяется с тенантом владельца. По умолчанию
+    (`openapi.tokens.scopes.allow-tenant-override=false`) «чужой» тенант даёт **403**
+    (`TenantNotAllowedException`, ProblemDetail title `Tenant Not Allowed`), а не запись
+    в чужой тенант. Легаси-поведение («взять ровно запрошенный тенант») возвращает
+    `allow-tenant-override: true`.
+
+    Важное следствие для `internal`-режима: там тенант владельца — `null`, поэтому любой
+    непустой `tenantId` в запросе считается чужим и даёт 403. Подробнее —
+    [Скоупы: тенант из запроса](scopes.md#тенант-из-запроса-allow-tenant-override).
 
 ---
 
@@ -252,51 +296,56 @@ checker.hasAnyAuthority("createPayment", "refundPayment");
 
 ## Повышение привилегий через скоупы
 
-!!! danger "Критично: произвольные скоупы при создании токена"
-    Эндпоинт создания токена (`POST /api/openapi/tokens`) принимает **любые** непустые
-    строки в `scopes` и не сверяет их ни со справочником, ни с правами владельца.
-    В режиме `scopes.mode=identity` скоуп становится authority без изменений.
+Исторический вектор атаки: `POST /api/openapi/tokens` принимал **любые** непустые строки
+в `scopes`, и в режиме `scopes.mode=identity` скоуп `ROLE_ADMIN` становился authority,
+открывающей `/api/openapi/admin/**` (`hasRole("ADMIN")`). Атакующий с обычной учётной
+записью выпускал себе «админский» токен и получал доступ ко всем токенам.
 
-    **Сценарий атаки:**
+Теперь этот сценарий закрыт **по умолчанию**:
 
-    1. любой аутентифицированный пользователь (например, `demo`/`demo` из демо-приложения)
-       вызывает `POST /api/openapi/tokens` с `{"name":"x","scopes":["ROLE_ADMIN"]}`;
-    2. получает `rawToken`;
-    3. обращается с этим токеном к `GET /api/openapi/admin/tokens` — цепочка статера
-       требует `hasRole("ADMIN")` → authority `ROLE_ADMIN` → **доступ разрешён**;
-    4. видит и блокирует/отзывает токены всех владельцев.
+| Слой защиты | Настройка по умолчанию | Что делает |
+|---|---|---|
+| Deny-шаблоны | `scopes.validation.deny-patterns: ["ROLE_.*"]` | отклоняет `ROLE_ADMIN` и любые роли (422) |
+| Справочник | `scopes.validation.mode: catalog` | отклоняет скоупы, которых нет в `ScopeCatalog` |
+| Проверка делегирования | `scopes.validation.mode: strict` (опционально) | запрещает выдать authority, которых нет у вызывающего |
 
-    **Рекомендации по устранению (на стороне продукта):**
+Порядок и форма отказа — [Валидация скоупов](scopes.md#валидация-скоупов-при-создании-токена).
+Итог: произвольный скоуп из запроса больше не создаётся молча — при нарушении правил
+запрос создания падает с **422** и ничего не сохраняется.
 
-    - валидировать `scopes` входящего запроса по белому списку из `ScopeCatalog`
-      или собственного перечня (свой контроллер-обёртка либо `HandlerInterceptor`/`@ControllerAdvice`);
-    - запретить выдачу authority, которых у текущего пользователя нет;
-    - использовать `scopes.mode=mapped` — тогда authority появляются только из объявленных
-      маппингов, а произвольная строка не даёт прав;
-    - ограничить административные эндпоинты статера отдельным контуром/ролью, недоступной
-      обычным пользователям;
-    - заменить готовый `SecurityFilterChain` статера своей конфигурацией.
+!!! danger "Остаётся при `scopes.validation.mode: off` или переопределённом `ScopeValidator`"
+    Режим `off` возвращает прежнее поведение — произвольные скоупы снова становятся
+    authority. Не выключайте валидацию в продакшене и не заменяйте бин `ScopeValidator`
+    на «принимающий всё» без собственной политики. Дополнительно ограничивайте
+    административные эндпоинты статера отдельным контуром/ролью.
 
-    Подробнее об ограничениях — [Ограничения и roadmap](../operations/roadmap.md).
+Подробнее об ограничениях — [Ограничения и roadmap](../operations/roadmap.md).
 
 ---
 
 ## Аудит аутентификации
 
 Каждая попытка аутентификации по токену (успешная и неуспешная) записывается в аудит
-с действием `AUTHENTICATE`:
+с действием `AUTHENTICATE`. Событие формируется в `finally` **после** обработки запроса,
+поэтому `responseStatus` — фактический статус ответа, а не всегда 200:
 
 | Результат | `success` | `responseStatus` | Комментарий |
 |---|---|---|---|
-| Успех | `true` | 200 | запись фиксируется **до** выполнения обработчика, поэтому фактический статус ответа может отличаться |
-| Неверный токен/статус/TTL | `false` | 401 | `tokenId` в записи отсутствует — токен не идентифицирован |
-| Превышен rate limit | `false` | 429 | `tokenId` присутствует (токен опознан) |
+| Успех | `true` | фактический статус обработчика (200, 403, 404, 500, …) | пишется после `filterChain.doFilter` |
+| Неверный токен/статус/TTL/пустые authority | `false` | 401 | `tokenId` отсутствует — токен не идентифицирован |
+| Превышен пер-токенный rate limit | `false` | 429 | `tokenId` присутствует (токен опознан) |
+| Превышен пре-аутентификационный лимит попыток | `false` | 429 | `tokenId` отсутствует — токен ещё не искали |
+
+Записи о неуспешных попытках можно отключить —
+`openapi.tokens.audit.record-failures=false`. Успешные аутентификации и события
+жизненного цикла (`CREATE_TOKEN`, `REVOKE_TOKEN`, …) пишутся всегда, пока аудит включён.
 
 Подробнее: [Аудит и статистика](audit.md).
 
 ## Связанные разделы
 
-- [Rate limiting](rate-limiting.md) — политика лимитов на токен.
-- [Скоупы и права](scopes.md) — модели `identity` / `mapped`.
+- [Rate limiting](rate-limiting.md) — политика лимитов на токен и пре-аутентификационный троттлинг.
+- [Скоупы и права](scopes.md) — модели `identity` / `mapped` и валидация скоупов при создании.
+- [Жизненный цикл токена](token-lifecycle.md) — TTL, квота и статусы.
 - [Бэкенд-разработчику](../guides/backend.md) — интеграция и своя конфигурация безопасности.
-- [Порты и SPI](../api/spi.md) — замена `TokenOwnerResolver`, `TokenHasher`, `ApiTokenAuthenticator`.
+- [Порты и SPI](../api/spi.md) — замена `TokenOwnerResolver`, `TokenHasher`, `ApiTokenAuthenticator`, `ScopeValidator`.

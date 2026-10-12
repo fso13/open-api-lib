@@ -45,8 +45,33 @@ public class JpaScopeMappingRepository implements ScopeMappingRepository {
     @Transactional
     public ScopeMapping save(ScopeMapping mapping) {
         Objects.requireNonNull(mapping, "mapping");
-        final ScopeMappingEntity entity = toEntity(mapping);
+        // The unique constraint is (token_scope, project_scope, tenant_id): reuse the existing row
+        // for the natural key instead of failing on a duplicate insert.
+        final ScopeMappingEntity entity = resolveTarget(mapping);
+        entity.setTokenScope(mapping.tokenScope());
+        entity.setProjectScope(mapping.projectScope());
+        entity.setTenantId(mapping.tenantId());
         return toDomain(jpaRepository.save(entity));
+    }
+
+    private ScopeMappingEntity resolveTarget(ScopeMapping mapping) {
+        if (mapping.id() != null) {
+            final var byId = jpaRepository.findById(mapping.id());
+            if (byId.isPresent()) {
+                return byId.get();
+            }
+        }
+        final String tokenScope = mapping.tokenScope();
+        final String projectScope = mapping.projectScope();
+        final var existing = mapping.tenantId() == null
+                ? jpaRepository.findByTokenScopeAndProjectScopeAndTenantIdIsNull(tokenScope, projectScope)
+                : jpaRepository.findByTokenScopeAndProjectScopeAndTenantId(
+                        tokenScope, projectScope, mapping.tenantId());
+        return existing.orElseGet(() -> {
+            final ScopeMappingEntity entity = new ScopeMappingEntity();
+            entity.setId(mapping.id() == null ? UUID.randomUUID() : mapping.id());
+            return entity;
+        });
     }
 
     @Override
@@ -57,14 +82,5 @@ public class JpaScopeMappingRepository implements ScopeMappingRepository {
 
     private ScopeMapping toDomain(ScopeMappingEntity entity) {
         return new ScopeMapping(entity.getId(), entity.getTokenScope(), entity.getProjectScope(), entity.getTenantId());
-    }
-
-    private ScopeMappingEntity toEntity(ScopeMapping mapping) {
-        final ScopeMappingEntity entity = new ScopeMappingEntity();
-        entity.setId(mapping.id() == null ? UUID.randomUUID() : mapping.id());
-        entity.setTokenScope(mapping.tokenScope());
-        entity.setProjectScope(mapping.projectScope());
-        entity.setTenantId(mapping.tenantId());
-        return entity;
     }
 }

@@ -21,7 +21,7 @@ import java.util.UUID;
 /**
  * Admin UI: every token of every owner, with search/filters, block, unblock and force revoke.
  *
- * <p>URL level protection lives in {@link UiSecurityConfig} ({@code /admin/**} requires
+ * <p>URL level protection lives in {@link TokenUiSecurity} ({@code /admin/**} requires
  * {@code ROLE_ADMIN}); the {@link PreAuthorize} annotation is defence in depth.</p>
  */
 @Controller

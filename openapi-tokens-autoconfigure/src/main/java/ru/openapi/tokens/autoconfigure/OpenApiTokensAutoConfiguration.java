@@ -1,15 +1,19 @@
 package ru.openapi.tokens.autoconfigure;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.annotation.Order;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.security.access.PermissionEvaluator;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -21,14 +25,25 @@ import ru.openapi.tokens.security.ApiTokenPermissionEvaluator;
 import ru.openapi.tokens.security.DefaultApiTokenAuthenticator;
 import ru.openapi.tokens.security.InternalTokenOwnerResolver;
 import ru.openapi.tokens.security.KeycloakTokenOwnerResolver;
+import ru.openapi.tokens.security.SecurityContextCallerAuthorityResolver;
+import ru.openapi.tokens.token.RateLimitPolicy;
 import ru.openapi.tokens.token.audit.AsyncAuditRecorder;
+import ru.openapi.tokens.token.audit.NoOpAuditRecorder;
+import ru.openapi.tokens.token.audit.SyncAuditRecorder;
 import ru.openapi.tokens.token.hash.TokenHasherFactory;
 import ru.openapi.tokens.token.ratelimit.Bucket4jRateLimiter;
+import ru.openapi.tokens.token.scope.CallerAuthorityScopeValidator;
+import ru.openapi.tokens.token.scope.CatalogScopeValidator;
 import ru.openapi.tokens.token.scope.CompositeMappingSource;
+import ru.openapi.tokens.token.scope.CompositeScopeValidator;
 import ru.openapi.tokens.token.scope.DefaultScopeCatalog;
+import ru.openapi.tokens.token.scope.DenyPatternScopeValidator;
 import ru.openapi.tokens.token.scope.IdentityScopeResolver;
 import ru.openapi.tokens.token.scope.MappedScopeResolver;
 import ru.openapi.tokens.token.scope.ScopeMappingSource;
+import ru.openapi.tokens.token.scope.ScopeMode;
+import ru.openapi.tokens.token.scope.ScopeValidationMode;
+import ru.openapi.tokens.token.service.ApiTokenServiceSettings;
 import ru.openapi.tokens.token.service.DefaultApiTokenService;
 import ru.openapi.tokens.token.spi.ApiTokenAuthenticator;
 import ru.openapi.tokens.token.spi.ApiTokenPermissionChecker;
@@ -36,11 +51,13 @@ import ru.openapi.tokens.token.spi.ApiTokenRepository;
 import ru.openapi.tokens.token.spi.ApiTokenService;
 import ru.openapi.tokens.token.spi.AuditLogRepository;
 import ru.openapi.tokens.token.spi.AuditRecorder;
+import ru.openapi.tokens.token.spi.CallerAuthorityResolver;
 import ru.openapi.tokens.token.spi.RateLimiter;
 import ru.openapi.tokens.token.spi.ScopeCatalog;
 import ru.openapi.tokens.token.spi.ScopeCatalogRepository;
 import ru.openapi.tokens.token.spi.ScopeMappingRepository;
 import ru.openapi.tokens.token.spi.ScopeResolver;
+import ru.openapi.tokens.token.spi.ScopeValidator;
 import ru.openapi.tokens.token.spi.TokenHasher;
 import ru.openapi.tokens.token.spi.TokenOwnerResolver;
 import ru.openapi.tokens.web.AdminApiTokenController;
@@ -50,9 +67,12 @@ import ru.openapi.tokens.web.ScopeCatalogController;
 import ru.openapi.tokens.web.UserApiTokenController;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 
-@AutoConfiguration
+@AutoConfiguration(after = SecurityAutoConfiguration.class)
 @ConditionalOnProperty(prefix = "openapi.tokens", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(OpenApiTokensProperties.class)
 public class OpenApiTokensAutoConfiguration {
@@ -66,7 +86,8 @@ public class OpenApiTokensAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     TokenHasher tokenHasher(OpenApiTokensProperties properties) {
-        return TokenHasherFactory.create(properties.getHashing().getAlgorithm());
+        // Algorithm-tagged hashes: changing hashing.algorithm does not invalidate stored tokens.
+        return TokenHasherFactory.createTagged(properties.getHashing().getAlgorithm());
     }
 
     @Bean
@@ -87,7 +108,7 @@ public class OpenApiTokensAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     ScopeResolver scopeResolver(OpenApiTokensProperties properties, ScopeMappingSource scopeMappingSource) {
-        if ("mapped".equalsIgnoreCase(properties.getScopes().getMode())) {
+        if (properties.getScopes().getMode() == ScopeMode.MAPPED) {
             return new MappedScopeResolver(scopeMappingSource);
         }
         return new IdentityScopeResolver();
@@ -109,6 +130,40 @@ public class OpenApiTokensAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    CallerAuthorityResolver callerAuthorityResolver(OpenApiTokensProperties properties) {
+        return new SecurityContextCallerAuthorityResolver(
+                properties.getScopes().getValidation().getPrivilegedAuthorities()
+        );
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    ScopeValidator scopeValidator(
+            OpenApiTokensProperties properties,
+            ScopeResolver scopeResolver,
+            ObjectProvider<ScopeCatalog> scopeCatalog
+    ) {
+        final OpenApiTokensProperties.Validation validation = properties.getScopes().getValidation();
+        if (validation.getMode() == ScopeValidationMode.OFF) {
+            return ScopeValidator.allowAll();
+        }
+        final List<ScopeValidator> delegates = new ArrayList<>();
+        delegates.add(new DenyPatternScopeValidator(validation.getDenyPatterns()));
+        if (validation.getMode() == ScopeValidationMode.CATALOG
+                || validation.getMode() == ScopeValidationMode.STRICT) {
+            final ScopeCatalog catalog = scopeCatalog.getIfAvailable();
+            if (catalog != null) {
+                delegates.add(new CatalogScopeValidator(catalog));
+            }
+        }
+        if (validation.getMode() == ScopeValidationMode.STRICT) {
+            delegates.add(new CallerAuthorityScopeValidator(scopeResolver));
+        }
+        return delegates.size() == 1 ? delegates.getFirst() : new CompositeScopeValidator(delegates);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     @ConditionalOnProperty(prefix = "openapi.tokens.auth", name = "mode", havingValue = "internal", matchIfMissing = true)
     TokenOwnerResolver internalTokenOwnerResolver() {
         return new InternalTokenOwnerResolver();
@@ -124,19 +179,33 @@ public class OpenApiTokensAutoConfiguration {
 
     @Bean(name = "openapiTokensAuditExecutor")
     @ConditionalOnMissingBean(name = "openapiTokensAuditExecutor")
-    Executor openapiTokensAuditExecutor() {
+    ThreadPoolTaskExecutor openapiTokensAuditExecutor() {
         final ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(1_000);
         executor.setThreadNamePrefix("openapi-tokens-audit-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(5);
         executor.initialize();
         return executor;
     }
 
     @Bean
     @ConditionalOnMissingBean
-    AuditRecorder auditRecorder(AuditLogRepository auditLogRepository, Executor openapiTokensAuditExecutor) {
-        return new AsyncAuditRecorder(auditLogRepository, openapiTokensAuditExecutor);
+    AuditRecorder auditRecorder(
+            OpenApiTokensProperties properties,
+            AuditLogRepository auditLogRepository,
+            @Qualifier("openapiTokensAuditExecutor") Executor auditExecutor
+    ) {
+        if (!properties.getAudit().isEnabled()) {
+            return new NoOpAuditRecorder();
+        }
+        if (!properties.getAudit().isAsync()) {
+            return new SyncAuditRecorder(auditLogRepository);
+        }
+        return new AsyncAuditRecorder(auditLogRepository, auditExecutor);
     }
 
     @Bean
@@ -146,17 +215,27 @@ public class OpenApiTokensAutoConfiguration {
             TokenHasher tokenHasher,
             TokenOwnerResolver ownerResolver,
             AuditLogRepository auditLogRepository,
+            AuditRecorder auditRecorder,
+            CallerAuthorityResolver callerAuthorityResolver,
+            ScopeValidator scopeValidator,
             Clock openApiTokensClock,
             OpenApiTokensProperties properties
     ) {
+        final ApiTokenServiceSettings settings = ApiTokenServiceSettings
+                .builder(properties.getToken().getPrefixLength(), properties.getLimits().getMaxTokensPerOwner())
+                .defaultTtl(properties.getToken().getDefaultTtl())
+                .allowTenantOverride(properties.getScopes().isAllowTenantOverride())
+                .scopeValidator(scopeValidator)
+                .callerAuthorityResolver(callerAuthorityResolver)
+                .auditRecorder(auditRecorder)
+                .build();
         return new TransactionalApiTokenService(new DefaultApiTokenService(
                 repository,
                 tokenHasher,
                 ownerResolver,
                 auditLogRepository,
                 openApiTokensClock,
-                properties.getToken().getPrefixLength(),
-                properties.getLimits().getMaxTokensPerOwner()
+                settings
         ));
     }
 
@@ -168,23 +247,46 @@ public class OpenApiTokensAutoConfiguration {
             ScopeResolver scopeResolver,
             RateLimiter rateLimiter,
             ApiTokenService apiTokenService,
-            Clock openApiTokensClock
+            Clock openApiTokensClock,
+            OpenApiTokensProperties properties
     ) {
+        final OpenApiTokensProperties.Auth auth = properties.getAuth();
+        final RateLimitPolicy failedAttemptPolicy = auth.getFailedAttemptLimit() > 0
+                ? RateLimitPolicy.of(auth.getFailedAttemptLimit(), auth.getFailedAttemptWindowSeconds())
+                : null;
         return new DefaultApiTokenAuthenticator(
-                repository, tokenHasher, scopeResolver, rateLimiter, apiTokenService, openApiTokensClock
+                repository,
+                tokenHasher,
+                scopeResolver,
+                rateLimiter,
+                apiTokenService,
+                openApiTokensClock,
+                failedAttemptPolicy,
+                auth.isRejectEmptyAuthorities()
         );
     }
 
     @Bean
     @ConditionalOnMissingBean
-    ApiTokenPermissionChecker apiTokenPermissionChecker() {
+    ApiTokenPermissionEvaluator apiTokenPermissionEvaluator() {
         return new ApiTokenPermissionEvaluator();
+    }
+
+    /**
+     * Exposes the same instance under the port used by product code. The concrete bean above also
+     * satisfies {@link PermissionEvaluator}, so {@code hasPermission(...)} expressions work as soon
+     * as the application enables method security.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    ApiTokenPermissionChecker apiTokenPermissionChecker(ApiTokenPermissionEvaluator evaluator) {
+        return evaluator;
     }
 
     @Bean
     @ConditionalOnMissingBean
-    ApiTokenWebMapper apiTokenWebMapper() {
-        return new ApiTokenWebMapper();
+    ApiTokenWebMapper apiTokenWebMapper(Clock openApiTokensClock) {
+        return new ApiTokenWebMapper(openApiTokensClock);
     }
 
     @Bean
@@ -221,6 +323,12 @@ public class OpenApiTokensAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    TokenConcurrencyExceptionHandler tokenConcurrencyExceptionHandler() {
+        return new TokenConcurrencyExceptionHandler();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     ApiTokenAuthenticationFilter apiTokenAuthenticationFilter(
             ApiTokenAuthenticator apiTokenAuthenticator,
             AuditRecorder auditRecorder,
@@ -236,8 +344,24 @@ public class OpenApiTokensAutoConfiguration {
                 auditRecorder,
                 openApiTokensClock,
                 properties.getToken().getHeader(),
-                properties.getToken().getBearerPrefix()
+                properties.getToken().getBearerPrefix(),
+                properties.getRateLimit().getRetryAfterSeconds(),
+                properties.getAudit().isRecordFailures()
         );
+    }
+
+    /**
+     * The filter is registered by the security chains explicitly; without this registration Spring
+     * Boot would also add it as a global servlet filter for every URL.
+     */
+    @Bean
+    FilterRegistrationBean<ApiTokenAuthenticationFilter> apiTokenAuthenticationFilterRegistration(
+            ApiTokenAuthenticationFilter apiTokenAuthenticationFilter
+    ) {
+        final FilterRegistrationBean<ApiTokenAuthenticationFilter> registration =
+                new FilterRegistrationBean<>(apiTokenAuthenticationFilter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean

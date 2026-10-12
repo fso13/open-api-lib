@@ -22,6 +22,12 @@ openapi:
       mode: internal
     scopes:
       mode: identity
+      # Валидация скоупов при создании токена (по умолчанию catalog):
+      #   off | deny-list | catalog | strict. deny-patterns запрещает authority вида ROLE_*.
+      validation:
+        mode: catalog
+        deny-patterns:
+          - "ROLE_.*"
       # Справочник скоупов: имя → человекочитаемое описание.
       # Отдаётся через GET /api/openapi/scopes и рендерится в UI (/ui/scopes, форма создания токена).
       # Описание из таблицы scope_catalog переопределяет значение из конфига.

@@ -8,18 +8,24 @@ import org.springframework.boot.test.util.TestPropertyValues;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import ru.openapi.tokens.token.ScopeInfo;
+import ru.openapi.tokens.token.ScopeValidationContext;
+import ru.openapi.tokens.token.exception.InvalidScopeException;
 import ru.openapi.tokens.token.spi.ApiTokenRepository;
 import ru.openapi.tokens.token.spi.ApiTokenService;
 import ru.openapi.tokens.token.spi.AuditLogRepository;
 import ru.openapi.tokens.token.spi.ScopeCatalog;
 import ru.openapi.tokens.token.spi.ScopeMappingRepository;
+import ru.openapi.tokens.token.spi.ScopeValidator;
 import ru.openapi.tokens.token.spi.TokenHasher;
 import ru.openapi.tokens.token.spi.TokenOwnerResolver;
 import ru.openapi.tokens.web.ScopeCatalogController;
 
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 @DisplayName("OpenApiTokensAutoConfiguration")
@@ -80,6 +86,73 @@ class OpenApiTokensAutoConfigurationTest {
     void shouldReturnEmptyScopeCatalog() {
         runner.withPropertyValues("openapi.tokens.enabled=true")
                 .run(context -> assertThat(context.getBean(ScopeCatalog.class).listScopes()).isEmpty());
+    }
+
+    @Test
+    @DisplayName("Should reject denied and unknown scopes with the default catalog mode")
+    void shouldValidateScopesByDefault() {
+        // Map form avoids treating the ':' inside scope names as a key/value separator
+        final Map<String, String> properties = Map.of(
+                "openapi.tokens.enabled", "true",
+                "openapi.tokens.scopes.catalog[payments:read]", "Чтение платежей"
+        );
+        runner.withInitializer(context -> TestPropertyValues.of(properties).applyTo(context))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(ScopeValidator.class);
+                    final ScopeValidator validator = context.getBean(ScopeValidator.class);
+
+                    assertThatThrownBy(() -> validator.validate(context(Set.of("ROLE_ADMIN"))))
+                            .isInstanceOf(InvalidScopeException.class)
+                            .satisfies(ex -> assertThat(((InvalidScopeException) ex).getReason())
+                                    .isEqualTo(InvalidScopeException.Reason.DENIED_SCOPE));
+                    assertThatThrownBy(() -> validator.validate(context(Set.of("super:scope"))))
+                            .isInstanceOf(InvalidScopeException.class)
+                            .satisfies(ex -> assertThat(((InvalidScopeException) ex).getReason())
+                                    .isEqualTo(InvalidScopeException.Reason.UNKNOWN_SCOPE));
+
+                    assertThatCode(() -> validator.validate(context(Set.of("payments:read"))))
+                            .doesNotThrowAnyException();
+                });
+    }
+
+    @Test
+    @DisplayName("Should accept anything when scope validation is off")
+    void shouldAcceptAnythingWhenValidationOff() {
+        runner.withPropertyValues(
+                        "openapi.tokens.enabled=true",
+                        "openapi.tokens.scopes.validation.mode=off")
+                .run(context -> assertThatCode(() ->
+                        context.getBean(ScopeValidator.class).validate(context(Set.of("ROLE_ADMIN"))))
+                        .doesNotThrowAnyException());
+    }
+
+    @Test
+    @DisplayName("Should fail closed in strict mode without caller authorities")
+    void shouldFailClosedInStrictMode() {
+        final Map<String, String> properties = Map.of(
+                "openapi.tokens.enabled", "true",
+                "openapi.tokens.scopes.validation.mode", "strict",
+                "openapi.tokens.scopes.catalog[payments:read]", "Чтение платежей"
+        );
+        runner.withInitializer(context -> TestPropertyValues.of(properties).applyTo(context))
+                .run(context -> assertThatThrownBy(() ->
+                        context.getBean(ScopeValidator.class).validate(context(Set.of("payments:read"))))
+                        .isInstanceOf(InvalidScopeException.class)
+                        .satisfies(ex -> assertThat(((InvalidScopeException) ex).getReason())
+                                .isEqualTo(InvalidScopeException.Reason.NOT_GRANTABLE)));
+    }
+
+    @Test
+    @DisplayName("Should fail to start on an unknown scopes.mode value")
+    void shouldFailOnUnknownScopeMode() {
+        runner.withPropertyValues(
+                        "openapi.tokens.enabled=true",
+                        "openapi.tokens.scopes.mode=mappd")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
+    private static ScopeValidationContext context(Set<String> requested) {
+        return new ScopeValidationContext("owner-1", null, requested, Set.of(), false);
     }
 
     @Configuration
